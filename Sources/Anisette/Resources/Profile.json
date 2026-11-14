@@ -2,14 +2,14 @@
   "build" : {
     "assets" : [
       {
-        "hash" : "7f137691832af8c4f3e1db87e7f4b00eb3ffaadd99e972b30e2ad930ffe0865d",
+        "hash" : "c4198daafd2d6ec8353d7dada2f32779c5cac13249a8ef4d9114acb88526903e",
         "name" : "AppleMediaServices",
-        "size" : 14762874
+        "size" : 14999545
       },
       {
-        "hash" : "afbc123e688a822d980d5816cc2b52f69fde669d1dca92cf85627e1cbee587f6",
+        "hash" : "63b9131079d8206e009878e7af4e69943be7cd42add4d2bcff24497129fc9257",
         "name" : "CoreFP",
-        "size" : 30764976
+        "size" : 30797904
       },
       {
         "hash" : "cb8f55330ec567da3e692dab5f5388bed0312dd9093340477c5759078cc2aa7b",
@@ -17,108 +17,108 @@
         "size" : 7365344
       },
       {
-        "hash" : "c89124b03c71723b7e1ee005d8deb2daf3a8117264ebd8eda89e09de0bd4ac32",
+        "hash" : "81f970ca9550190c57cdc42f0ceeece3af2968be97e1023695520f9a3cc5747e",
         "name" : "FairPlayIOKit",
-        "size" : 2130979
+        "size" : 2147363
       },
       {
-        "hash" : "43419a206c28bc93ecb8884256088d18306a0a462350f83adbced8e60a94e390",
+        "hash" : "3e9e1b6901a884c7ec08f09170a314362e397c2ff8cb4ec3fec5214c17eeb613",
         "name" : "adid",
         "size" : 3047808
       },
       {
-        "hash" : "c4b2088dd39aeb353f59cb57597902e8317aec66ae7da0414b03c5f932771343",
+        "hash" : "549e5fcfaa4313f95e3155557c01fd55c0428e10e20f1eb3dd22cb955fdf01d5",
         "name" : "commerce",
-        "size" : 2735088
+        "size" : 2735184
       },
       {
-        "hash" : "1e58d37e9602dd0ca5e24b14762063b6c310248b4d3a94272771d815e4ea1784",
+        "hash" : "f68e4407e90af5466d2766e1b1c4637260d08cb0518f991e1797ac6c4964439d",
         "name" : "fairplayd",
-        "size" : 17389744
+        "size" : 17668912
       }
     ],
-    "cacheName" : "apple-assets-macos-27-26A434-arm64-v6",
+    "cacheName" : "apple-assets-macos-27-26B131-arm64-v1",
     "kernelCache" : {
-      "compressed" : 33043908,
+      "compressed" : 33129975,
       "name" : "kernelcache.release.mac13j",
-      "size" : 33096787
+      "size" : 33183192
     },
     "kernelCollectionBase" : 18446741874803752960,
     "preparedImageHashes" : {
-      "AppleMediaServices" : "80a0781cda64b1bc672249ac69f395a4e196e9e889d83a6fb50b1009bdb7adbf",
-      "CoreFP" : "b99da82ef73e0e0f5d90ec674447e4658f1c397dc70942bb42565323da43c847",
-      "FairPlayIOKit" : "a90aba67fe984142d85e7eaa4fedc5188c1e1427c1fab69a25027cb671fb424e",
-      "adid" : "8b28eef7ea05442b1d79d5114519c1061c1064ce2003b8aacd65dbb18ccd76f1",
-      "commerce" : "40e17057d31c01d0bd3d1831e3f26d93c10b3d9a08b23efe4bb4112d76a3f029",
-      "fairplayd" : "4103dbf911e41093684182ff6a694d98be45e85a9dcecf5b97d27e180a154d3f"
+      "AppleMediaServices" : "d97888e315cb6ac5e4573f9e25a6ca4993e3dc8029024c84337468d3f34e7a67",
+      "CoreFP" : "6100629ea5faf1a203c6cc7e31571abc39b9d3bfb71567132f93ba6f3eb3f1a0",
+      "FairPlayIOKit" : "4009b7de7ab025da0ab922d34de78fd1283eaa8e8b1a1a9382ea9d50e432c164",
+      "adid" : "450f36229d1db4c21cfef627a2fa1ce54e88aade9380dfcba787e1e4c9afc7d0",
+      "commerce" : "6cde19df6e735ddc7aa090096c72aae5093c51c666da869853cc073f396e237a",
+      "fairplayd" : "d4f4db83aaa7d9cf4ebf07f2458a0fd2b1dfeeac8c5c03a35effe11e5229bf65"
     },
-    "restoreImageSize" : 26637307067,
-    "restoreImageURL" : "https://updates.cdn-apple.com/2026FallFCS/59241290-5d51-4ca8-9df4-31624b9a4eac/UniversalMac_27.0.1_26A434_Restore.ipsw",
+    "restoreImageSize" : 25595954706,
+    "restoreImageURL" : "https://updates.cdn-apple.com/2026FallFCS/c202a724-db7e-4d56-917b-110aa0226507/UniversalMac_27.2.1_26B131_Restore.ipsw",
     "sharedCache" : {
-      "filesystemSize" : 2879389696,
+      "filesystemSize" : 2894069760,
       "member" : {
         "compressed" : 2415919104,
-        "name" : "043-70701-651.dmg.aea",
+        "name" : "141-12293-176.dmg.aea",
         "size" : 2415919104
       }
     },
     "system" : {
-      "filesystemSize" : 14189330432,
+      "filesystemSize" : 14289993728,
       "member" : {
         "compressed" : 11274289152,
-        "name" : "043-70867-640.dmg.aea",
+        "name" : "141-12228-174.dmg.aea",
         "size" : 11274289152
       }
     }
   },
   "entries" : {
     "daemonMain" : 35184372158848,
-    "endProvisioning" : 17595409191204,
-    "fairPlayDaemonMain" : 105553119617088,
-    "kernelInit" : 123145348230180,
-    "kernelMessage" : 123145349471388,
-    "kernelSetup" : 123145348875104,
-    "kernelStackProbe" : 123145314420024,
-    "kernelStackProbeValue" : 123145348867928,
-    "kernelStart" : 123145348230804,
-    "requestOTP" : 17595409214212,
-    "startProvisioning" : 17595409056768
+    "endProvisioning" : 17595409192568,
+    "fairPlayDaemonMain" : 105553120541620,
+    "kernelInit" : 123145348371204,
+    "kernelMessage" : 123145349616520,
+    "kernelSetup" : 123145349020236,
+    "kernelStackProbe" : 123145314441016,
+    "kernelStackProbeValue" : 123145349013060,
+    "kernelStart" : 123145348371828,
+    "requestOTP" : 17595409215576,
+    "startProvisioning" : 17595409058132
   },
   "functions" : {
-    "6449224936" : "_malloc",
-    "6449227504" : "_free",
-    "6449591664" : "_dispatch_once",
-    "6449900744" : "_sysctlbyname",
-    "6449905348" : "_gettimeofday",
-    "6449930168" : "_arc4random",
-    "6449936548" : "___memset_chk",
-    "6450381764" : "_abort",
-    "6451140100" : "___error",
-    "6451403716" : "_pthread_once",
-    "6451406584" : "_pthread_rwlock_unlock",
-    "6451406784" : "_pthread_rwlock_wrlock",
-    "6451409624" : "_pthread_rwlock_init",
-    "6451448640" : "_strlen",
-    "6451688768" : "_CFStringCreateWithCString",
-    "6451708416" : "_CFStringGetLength",
-    "6451709148" : "_CFStringGetCString",
-    "6451720824" : "_CFRelease",
-    "6451792360" : "_CFDataGetLength",
-    "6523630796" : "_IOServiceMatching",
-    "6523634024" : "_IOServiceGetMatchingServices",
-    "6523634940" : "_IOIteratorNext",
-    "6523636560" : "_IOObjectRelease"
+    "6447990276" : "___error",
+    "6448253864" : "_pthread_once",
+    "6448256732" : "_pthread_rwlock_unlock",
+    "6448256932" : "_pthread_rwlock_wrlock",
+    "6448259772" : "_pthread_rwlock_init",
+    "6448393416" : "_sysctlbyname",
+    "6448398020" : "_gettimeofday",
+    "6448422840" : "_arc4random",
+    "6448429220" : "___memset_chk",
+    "6448874476" : "_abort",
+    "6474407144" : "_malloc",
+    "6474409712" : "_free",
+    "6516712768" : "_CFStringCreateWithCString",
+    "6516732416" : "_CFStringGetLength",
+    "6516733148" : "_CFStringGetCString",
+    "6516744824" : "_CFRelease",
+    "6516816360" : "_CFDataGetLength",
+    "6524695756" : "_IOServiceMatching",
+    "6524698984" : "_IOServiceGetMatchingServices",
+    "6524699900" : "_IOIteratorNext",
+    "6524701520" : "_IOObjectRelease",
+    "6531642736" : "_dispatch_once",
+    "6531918656" : "_strlen"
   },
   "slots" : {
-    "8055293376" : "___stack_chk_guard",
-    "8187332952" : "___chkstk_darwin"
+    "8054949872" : "___stack_chk_guard",
+    "8087818752" : "___chkstk_darwin"
   },
   "system" : {
     "akdVersion" : "1.0",
     "authKitVersion" : "1",
-    "buildVersion" : "26A434",
-    "cfNetworkVersion" : "3896.100.1.1.1",
-    "darwinVersion" : "27.0.0",
-    "productVersion" : "27.0.1"
+    "buildVersion" : "26B131",
+    "cfNetworkVersion" : "3896.200.61",
+    "darwinVersion" : "27.2.0",
+    "productVersion" : "27.2.1"
   }
 }
