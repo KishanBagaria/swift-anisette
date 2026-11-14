@@ -9,9 +9,9 @@ let package = Package(
     dependencies: [
         .package(url: "https://github.com/apple/swift-crypto", from: "5.0.0"),
         .package(url: "https://github.com/apple/swift-asn1", from: "1.7.3"),
-        .package(url: "https://github.com/KishanBagaria/lzfse-swift", revision: "bfdc057250a065ac1cb76dabc7b2484ba800b7c6"),
-        .package(url: "https://github.com/KishanBagaria/libzbitmap", revision: "8408434bf13d4601f5de808b64037629b22d4a3e"),
-        .package(url: "https://github.com/p-x9/MachOKit", revision: "86e3a0734c9f7fbb959ccbd4be233b378ed59815"),
+        .package(url: "https://github.com/KishanBagaria/lzfse-swift", .upToNextMinor(from: "1.0.2")),
+        .package(url: "https://github.com/KishanBagaria/libzbitmap", .upToNextMinor(from: "0.1.0")),
+        .package(url: "https://github.com/KishanBagaria/MachOKit", .upToNextMinor(from: "0.55.1")),
     ],
     targets: [
         .target(
