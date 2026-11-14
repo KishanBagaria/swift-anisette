@@ -1,0 +1,10 @@
+Adapted from ipatool b352566155a667d8aaeabaa7ecec4966080f92ab (MIT)
+and go-apfs v1.0.29 (Apache-2.0). APFSFile.swift and APFSTree.swift are
+modified Swift translations of the go-apfs reader. See LICENSE.ipatool
+and LICENSE.go-apfs.
+
+MachOKit header sources (APSL-2.0/BSD):
+https://github.com/p-x9/MachOKit/tree/86e3a0734c9f7fbb959ccbd4be233b378ed59815/Sources/MachOKitC
+
+Downloaded Unicorn 2.1.4 (GPLv2): LICENSE.unicorn.
+Source: https://github.com/unicorn-engine/unicorn/archive/refs/tags/2.1.4.tar.gz

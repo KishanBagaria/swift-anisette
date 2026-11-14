@@ -1,0 +1,31 @@
+name: Upstream check
+
+# Pinned downloads (Apple restore image, Unicorn wheels) can disappear upstream,
+# which breaks first-run installs. Verify them weekly against the pinned constants.
+on:
+  schedule:
+    - cron: '17 6 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  upstream:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Install Linux headers
+        run: sudo apt-get update && sudo apt-get install -y zlib1g-dev
+      - name: Import Swift signing keys
+        run: |
+          curl --fail --silent --show-error --location --compressed --retry 3 https://www.swift.org/keys/all-keys.asc -o "$RUNNER_TEMP/swift-signing-keys.asc"
+          gpg --batch --import "$RUNNER_TEMP/swift-signing-keys.asc"
+      - uses: swift-actions/setup-swift@d8e84bc3a450686a95474d7d6fa4a3301498debc # v3
+        with:
+          swift-version: '6.3.3'
+      - name: Verify pinned upstream downloads
+        run: swift test --filter UpstreamTests
+        env:
+          ANISETTE_TEST_UPSTREAM: '1'

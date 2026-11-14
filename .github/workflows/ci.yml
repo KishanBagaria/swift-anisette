@@ -1,0 +1,68 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Swift 6.3 / ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-26, ubuntu-24.04]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Install Linux headers
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y zlib1g-dev
+      - name: Import Swift signing keys
+        if: runner.os == 'Linux'
+        run: |
+          curl --fail --silent --show-error --location --compressed --retry 3 https://www.swift.org/keys/all-keys.asc -o "$RUNNER_TEMP/swift-signing-keys.asc"
+          gpg --batch --import "$RUNNER_TEMP/swift-signing-keys.asc"
+      - uses: swift-actions/setup-swift@d8e84bc3a450686a95474d7d6fa4a3301498debc # v3
+        with:
+          swift-version: '6.3.3'
+      - run: swift --version
+      - run: swift test
+      - name: Verify pinned Unicorn archive
+        run: swift test --filter nativeUnicornArchiveDownload
+        env:
+          ANISETTE_TEST_UNICORN: '1'
+      # Caches the Apple assets and the Unicorn library together. The cached-runtime tests
+      # refuse every download except the pinned Unicorn wheel, so a warm cache means no network.
+      # The asset directory name is fixed; the cache key changes with the pinned build.
+      - name: Cache Apple assets and Unicorn
+        id: assets
+        if: runner.os == 'macOS'
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ~/Library/Caches/swift-anisette
+          key: anisette-assets-${{ hashFiles('Sources/Anisette/Resources/Profile.json', 'Sources/Anisette/UnicornArtifact.swift') }}
+      - name: Install Apple assets and Unicorn
+        if: runner.os == 'macOS' && steps.assets.outputs.cache-hit != 'true'
+        run: ANISETTE_TEST_ASSETS=1 ANISETTE_APPLE_DIR="$HOME/Library/Caches/swift-anisette/ci-apple-assets" swift test --filter nativeAssetInstallation
+      - name: Test cached runtime
+        if: runner.os == 'macOS'
+        run: ANISETTE_APPLE_DIR="$HOME/Library/Caches/swift-anisette/ci-apple-assets" swift test --filter AnisetteTests
+
+  lint:
+    runs-on: macos-26
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Install SwiftLint 0.65.1
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download 0.65.1 --repo realm/SwiftLint --pattern portable_swiftlint.zip --dir "$RUNNER_TEMP/swiftlint"
+          unzip -q "$RUNNER_TEMP/swiftlint/portable_swiftlint.zip" -d "$RUNNER_TEMP/swiftlint"
+      - run: make lint SWIFTLINT="$RUNNER_TEMP/swiftlint/swiftlint"
