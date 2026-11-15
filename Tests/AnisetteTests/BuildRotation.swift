@@ -72,7 +72,8 @@ struct BuildRotation {
         let runtime = try ADIRuntime(identifier: withUnsafeBytes(of: UUID().uuid) { Data($0) }, state: Data(), profile: profile,
                                      library: UnicornLibrary(url: library), cancellation: Cancellation())
         let error = #expect(throws: AnisetteError.self) { _ = try runtime.requestOTP() }
-        try #require(error?.adiStatus == AnisetteError.notProvisionedStatus, "ADI did not run on the new build: \(String(describing: error))")
+        try #require(error?.adiStatus == AnisetteError.notProvisionedStatus,
+                     "ADI did not run on the new build: \(String(describing: error))")
 
         for image in profile.images { configuration.build.preparedImageHashes[image.name] = Resources.hash(image.data) }
         for (name, data) in assets { try Resources.writePrivate(data, to: directory.appendingPathComponent(name)) }

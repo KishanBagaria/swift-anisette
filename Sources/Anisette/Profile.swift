@@ -163,7 +163,9 @@ struct Profile: Sendable {
             if name == "AppleMediaServices" { try image.prelink(functions) } else {
                 try image.relocate(to: base, resolve: resolve)
             }
-            if name == "FairPlayIOKit" { try image.relocateKernel(to: base, kernelBase: configuration.build.kernelCollectionBase, resolve: resolve) }
+            if name == "FairPlayIOKit" {
+                try image.relocateKernel(to: base, kernelBase: configuration.build.kernelCollectionBase, resolve: resolve)
+            }
             for section in image.sections where section.flags & 0x80000400 != 0 {
                 try image.data.checkRange(section.offset, section.size)
                 image.data.withUnsafeMutableBytes { bytes in
