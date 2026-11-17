@@ -1,12 +1,12 @@
 {
-  "originHash" : "7079a5b7cfe991f2a77ee038be335668278b9913d556c10c409598d669b6a355",
+  "originHash" : "2641e7d1229b00d1bab23a58b42a6d6c0c2556c13e7925a00fdfbddc90924455",
   "pins" : [
     {
       "identity" : "libzbitmap",
       "kind" : "remoteSourceControl",
-      "location" : "https://github.com/KishanBagaria/libzbitmap",
+      "location" : "https://github.com/eafer/libzbitmap",
       "state" : {
-        "revision" : "9163616ae7bf724f17907dde761a05f3788f3540",
+        "revision" : "2fcb0809f5879697c6f97df8058e9f7b1df96e0d",
         "version" : "0.1.0"
       }
     },
@@ -22,10 +22,10 @@
     {
       "identity" : "machokit",
       "kind" : "remoteSourceControl",
-      "location" : "https://github.com/KishanBagaria/MachOKit",
+      "location" : "https://github.com/p-x9/MachOKit",
       "state" : {
-        "revision" : "86e3a0734c9f7fbb959ccbd4be233b378ed59815",
-        "version" : "0.55.1"
+        "revision" : "7513ef032ce3c99bedfcfa3a4a35f985dc80a154",
+        "version" : "0.56.2"
       }
     },
     {
@@ -69,8 +69,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/p-x9/swift-fileio.git",
       "state" : {
-        "revision" : "13a83389fb4844f279b43012c4b8d7a3f95773bf",
-        "version" : "0.15.1"
+        "revision" : "02198978c92aad9339ae2258e5d419fe366c157b",
+        "version" : "0.16.1"
       }
     },
     {

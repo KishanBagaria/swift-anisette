@@ -10,8 +10,8 @@ let package = Package(
         .package(url: "https://github.com/apple/swift-crypto", from: "5.0.0"),
         .package(url: "https://github.com/apple/swift-asn1", from: "1.7.3"),
         .package(url: "https://github.com/KishanBagaria/lzfse-swift", .upToNextMinor(from: "1.0.2")),
-        .package(url: "https://github.com/KishanBagaria/libzbitmap", .upToNextMinor(from: "0.1.0")),
-        .package(url: "https://github.com/KishanBagaria/MachOKit", .upToNextMinor(from: "0.55.1")),
+        .package(url: "https://github.com/eafer/libzbitmap", .upToNextMinor(from: "0.1.0")),
+        .package(url: "https://github.com/p-x9/MachOKit", .upToNextMinor(from: "0.56.2")),
     ],
     targets: [
         .target(
