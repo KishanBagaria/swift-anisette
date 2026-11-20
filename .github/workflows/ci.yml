@@ -11,7 +11,7 @@ permissions:
 
 jobs:
   test:
-    name: Swift 6.3 / ${{ matrix.os }}
+    name: Swift 6.2 / ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
@@ -30,9 +30,10 @@ jobs:
           gpg --batch --import "$RUNNER_TEMP/swift-signing-keys.asc"
       - uses: swift-actions/setup-swift@d8e84bc3a450686a95474d7d6fa4a3301498debc # v3
         with:
-          swift-version: '6.3.3'
+          swift-version: '6.2'
       - run: swift --version
       - run: swift test
+      - run: swift build --product anisette-example
       - name: Verify pinned Unicorn archive
         run: swift test --filter nativeUnicornArchiveDownload
         env:

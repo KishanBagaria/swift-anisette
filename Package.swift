@@ -31,6 +31,11 @@ let package = Package(
             ],
             resources: [.process("Resources")]
         ),
+        .executableTarget(
+            name: "anisette-example",
+            dependencies: ["Anisette", .product(name: "Crypto", package: "swift-crypto")],
+            path: "Examples/anisette-example"
+        ),
         .testTarget(
             name: "AnisetteTests",
             dependencies: ["Anisette"]

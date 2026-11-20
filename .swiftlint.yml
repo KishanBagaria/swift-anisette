@@ -61,3 +61,4 @@ included:
   - Package.swift
   - Sources
   - Tests
+  - Examples

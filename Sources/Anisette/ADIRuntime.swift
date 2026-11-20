@@ -58,9 +58,12 @@ final class ADIRuntime {
         try require(kernelContext != 0, "FairPlay kernel returned no session context")
     }
 
-    private func checkStatus(_ status: UInt64) throws {
+    private func checkStatus(_ status: UInt64, notProvisionedHint: String = "") throws {
         let code = Int32(truncatingIfNeeded: status)
-        guard code == 0 else { throw AnisetteError("Apple ADI returned error \(code)", adiStatus: code) }
+        guard code == 0 else {
+            let hint = code == AnisetteError.notProvisionedStatus ? notProvisionedHint : ""
+            throw AnisetteError("Apple ADI returned error \(code)\(hint)", adiStatus: code)
+        }
     }
 
     private func fairPlay(_ indirect: Data) throws -> (Data, Int32) {
@@ -128,7 +131,9 @@ final class ADIRuntime {
         defer { client.clearScratch() }
         let mid = try client.scratch(size: 8), midLength = try client.scratch(size: 4)
         let otp = try client.scratch(size: 8), otpLength = try client.scratch(size: 4)
-        try checkStatus(invoke(entries.requestOTP, UInt64.max - 1, mid, midLength, otp, otpLength))
+        try checkStatus(invoke(entries.requestOTP, UInt64.max - 1, mid, midLength, otp, otpLength), notProvisionedHint:
+            ": this identity is not provisioned. Call startProvisioning(challenge:) and finish it, "
+                + "then request the OTP from a context opened with the returned state")
         return (try readOutput(pointer: mid, length: midLength), try readOutput(pointer: otp, length: otpLength), try state())
     }
 

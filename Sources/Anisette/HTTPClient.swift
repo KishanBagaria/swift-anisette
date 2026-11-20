@@ -61,31 +61,41 @@ private final class Download: NSObject, URLSessionDataDelegate, @unchecked Senda
 
     func urlSession(_ session: URLSession, dataTask: URLSessionDataTask,
                     didReceive response: URLResponse, completionHandler: @escaping (URLSession.ResponseDisposition) -> Void) {
-        let accepted: Bool
-        if let response = response as? HTTPURLResponse, response.url?.scheme == "https" {
-            if let range {
-                let prefix = "bytes \(range.lowerBound)-\(range.upperBound - 1)/"
-                accepted = response.statusCode == 206
-                    && (response.value(forHTTPHeaderField: "Content-Range")?.hasPrefix(prefix) == true)
-                    && (response.expectedContentLength < 0 || response.expectedContentLength == limit)
-            } else {
-                accepted = response.statusCode == 200 && response.expectedContentLength <= limit
-            }
-        } else { accepted = false }
-        completionHandler(accepted ? .allow : .cancel)
-        if !accepted { finish(.failure(AnisetteError("Invalid response downloading \(url.lastPathComponent)"))) }
+        let rejection = rejection(of: response)
+        completionHandler(rejection == nil ? .allow : .cancel)
+        if let rejection { finish(.failure(failure(rejection))) }
+    }
+
+    private func rejection(of response: URLResponse) -> String? {
+        guard let response = response as? HTTPURLResponse, response.url?.scheme == "https" else {
+            return "the response was not HTTPS"
+        }
+        let length = response.expectedContentLength
+        guard let range else {
+            if response.statusCode != 200 { return "HTTP \(response.statusCode)" }
+            return length <= limit ? nil : "the server announced \(length) bytes, over the \(limit)-byte limit"
+        }
+        if response.statusCode != 206 { return "HTTP \(response.statusCode) instead of 206 for a range request" }
+        let expected = "bytes \(range.lowerBound)-\(range.upperBound - 1)/"
+        let actual = response.value(forHTTPHeaderField: "Content-Range")
+        if actual?.hasPrefix(expected) != true { return "Content-Range was \(actual ?? "missing"), expected \(expected)*" }
+        return length < 0 || length == limit ? nil : "the server announced \(length) bytes for a \(limit)-byte range"
+    }
+
+    private func failure(_ reason: String) -> AnisetteError {
+        AnisetteError("Cannot download \(url.lastPathComponent): \(reason)")
     }
 
     func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive chunk: Data) {
         guard chunk.count <= limit - data.count else {
-            dataTask.cancel(); finish(.failure(AnisetteError("Download exceeds size limit"))); return
+            dataTask.cancel(); finish(.failure(failure("the body exceeded \(limit) bytes"))); return
         }
         data.append(chunk)
     }
 
     func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: (any Error)?) {
         if let error { finish(.failure(error)) } else if range != nil && data.count != limit {
-            finish(.failure(AnisetteError("Truncated range response")))
+            finish(.failure(failure("the body ended after \(data.count) of \(limit) bytes")))
         } else { finish(.success(data)) }
     }
 

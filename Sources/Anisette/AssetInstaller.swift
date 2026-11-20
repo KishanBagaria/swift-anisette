@@ -21,7 +21,9 @@ actor AssetInstaller {
         if missing.isEmpty { return }
         func write(_ data: Data, name: String) throws {
             guard let file = missing[name] else { throw AnisetteError("Unknown Apple asset") }
-            try require(Resources.verify(data, size: file.size, hash: file.hash), "Apple asset \(name) failed integrity verification")
+            try require(Resources.verify(data, size: file.size, hash: file.hash),
+                        "Apple asset \(name) extracted from \(build.restoreImageURL.lastPathComponent) does not match the pinned "
+                            + "build. Retry once; if it fails again, update swift-anisette")
             try Resources.writePrivate(data, to: directory.appendingPathComponent(name))
         }
         let archive = try await RestoreArchive.open(RemoteAssetFile(http: http, build: build).file)

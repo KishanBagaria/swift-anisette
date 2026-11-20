@@ -2,15 +2,28 @@
 
 Local anisette generation in Swift for macOS and Linux. Runs Apple's ADI implementation in Unicorn. The caller handles provisioning HTTP requests and stores the resulting state; Apple ID credentials stay with the caller.
 
-Requires Swift 6.3 or later. iOS is not supported.
+Requires Swift 6.2 or later. iOS is not supported.
 
 ## Installation
 
 ```swift
-.package(url: "https://github.com/KishanBagaria/swift-anisette", branch: "main")
+.package(url: "https://github.com/KishanBagaria/swift-anisette", from: "0.1.0")
 ```
 
 Add `.product(name: "Anisette", package: "swift-anisette")` to your target's dependencies.
+
+Linux needs zlib development headers (`zlib1g-dev` on Ubuntu). Hardened macOS apps need `com.apple.security.cs.allow-unsigned-executable-memory` and `com.apple.security.cs.disable-library-validation`.
+
+## Example
+
+[Examples/anisette-example](Examples/anisette-example/main.swift) provisions a new identity with Apple, saves it, and prints the anisette headers. It needs no Apple ID:
+
+```sh
+git clone https://github.com/KishanBagaria/swift-anisette && cd swift-anisette
+swift run anisette-example
+```
+
+Run it again to reuse the identity saved in `anisette-identity.json`.
 
 ## Usage
 
@@ -30,7 +43,7 @@ let otp = try await AnisetteContext.with(
 // otp.machineID and otp.password contain the anisette data.
 ```
 
-For a new identity, exchange the challenges with Apple's servers. `startProvisioning` returns a `ProvisioningSession` holding the client challenge to send to Apple; its `finish` returns the new provisioning state:
+For a new identity, exchange the challenges with Apple's servers; the example implements `sendToApple`. `startProvisioning` returns a `ProvisioningSession` holding the client challenge to send to Apple; its `finish` returns the new provisioning state:
 
 ```swift
 let state = try await AnisetteContext.with(identifier: stableDeviceUUID) { context in
@@ -54,7 +67,7 @@ Keep each identity's UUID stable and serialize its entire read → generate → 
 
 ## Runtime
 
-First use downloads Unicorn and extracts the required files from Apple's public restore image. Downloads are verified and cached in the user's cache directory under `swift-anisette`.
+First use downloads Unicorn and extracts the required files from Apple's public restore image. This fetches about 215 MB in ranged requests, takes a few minutes, and keeps about 90 MB. Downloads are verified and cached in the user's cache directory under `swift-anisette`. Nothing is logged meanwhile; wrap `AnisetteHTTPClient.live` in your own `httpClient` to report progress, as the example does.
 
 Pass an `AnisetteConfiguration` to `open` or `with` for a custom cache (`cacheDirectory`), offline assets (`appleDirectory`, `unicornLibrary`), or your own downloader (`httpClient`):
 
@@ -66,8 +79,6 @@ try await AnisetteContext.with(identifier: id, provisioningState: state, configu
 ## Errors
 
 The library throws `AnisetteError`, or `CancellationError` when the task is cancelled or the context is closed. When Apple's ADI rejects a call, `adiStatus` holds its status code; `AnisetteError.notProvisionedStatus` means the identity must be provisioned first.
-
-Hardened macOS apps need `com.apple.security.cs.allow-unsigned-executable-memory` and `com.apple.security.cs.disable-library-validation`. Linux needs zlib development headers (`zlib1g-dev` on Ubuntu).
 
 ## Development
 

@@ -85,7 +85,9 @@ final class GuestMachine {
                 guard try emulateUnsupportedInstruction() else {
                     let pc = try engine.register(Unicorn.pc)
                     let lr = try engine.register(Unicorn.lr)
-                    throw AnisetteError("Guest failed at 0x\(String(pc, radix: 16)) (LR 0x\(String(lr, radix: 16))): \(error)")
+                    throw AnisetteError("Guest failed at 0x\(String(pc, radix: 16)) (LR 0x\(String(lr, radix: 16))): \(error). "
+                        + "Retrying will not help; report this with the build \(try PinnedBuild.current().cacheName) "
+                        + "at https://github.com/KishanBagaria/swift-anisette/issues")
                 }
                 next = try engine.register(Unicorn.pc)
             }

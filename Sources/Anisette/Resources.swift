@@ -53,7 +53,10 @@ struct Resources: Sendable {
     private static func loadUncached(configuration: AnisetteConfiguration) async throws -> Resources {
         let assets: [String: Data]
         if let explicit = configuration.appleDirectory {
-            assets = try readAssets(explicit)
+            do { assets = try readAssets(explicit) } catch let error as AnisetteError {
+                throw AnisetteError("\(error). appleDirectory must hold the assets of the pinned build "
+                    + "\(try PinnedBuild.current().cacheName); install them again, or leave it unset to download them")
+            }
         } else {
             let native = try configuration.cacheDirectory.appendingPathComponent(PinnedBuild.current().cacheName)
             if let existing = try? readAssets(native) { assets = existing } else {
@@ -71,8 +74,11 @@ struct Resources: Sendable {
     static func readAssets(_ directory: URL) throws -> [String: Data] {
         var assets: [String: Data] = [:]
         for file in try PinnedBuild.current().assets {
-            let data = try Data(contentsOf: directory.appendingPathComponent(file.name), options: .mappedIfSafe)
-            try require(verify(data, size: file.size, hash: file.hash), "Apple asset \(file.name) failed integrity verification")
+            guard let data = try? Data(contentsOf: directory.appendingPathComponent(file.name), options: .mappedIfSafe) else {
+                throw AnisetteError("Apple asset \(file.name) is missing from \(directory.path)")
+            }
+            try require(verify(data, size: file.size, hash: file.hash),
+                        "Apple asset \(file.name) in \(directory.path) failed integrity verification")
             assets[file.name] = data
         }
         return assets
