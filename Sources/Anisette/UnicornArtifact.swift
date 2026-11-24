@@ -1,6 +1,6 @@
 import Foundation
 
-struct UnicornArtifact {
+struct UnicornArtifact: Sendable {
     let url: URL
     let archiveHash: String
     let libraryHash: String
@@ -54,12 +54,10 @@ struct UnicornArtifact {
         libraryHash: "ddb196ec82b52e502c18e4a34478bf7b9f61c83c2ebaa95c74d8ded45a95da9c", name: "libunicorn.so.2"
     )
 
-    func resolve(in cacheDirectory: URL, http: AnisetteHTTPClient) async throws -> URL {
+    func resolve(in cacheDirectory: URL, http: AnisetteHTTPClient) async throws -> (url: URL, installed: Bool) {
         let destination = cacheDirectory.appendingPathComponent(relativePath)
-        if let data = try? Data(contentsOf: destination, options: .mappedIfSafe),
-           Resources.verify(data, hash: libraryHash) { return destination }
-        try await UnicornInstaller.shared.install(self, to: destination, http: http)
-        return destination
+        let installed = try await UnicornInstaller.shared.install(self, to: destination, http: http)
+        return (destination, installed)
     }
 
     static func member(_ name: String, in zip: Data) throws -> Data {
@@ -71,11 +69,14 @@ struct UnicornArtifact {
 private actor UnicornInstaller {
     static let shared = UnicornInstaller()
 
-    func install(_ artifact: UnicornArtifact, to destination: URL, http: AnisetteHTTPClient) async throws {
+    func install(_ artifact: UnicornArtifact, to destination: URL, http: AnisetteHTTPClient) async throws -> Bool {
+        if let existing = try? Data(contentsOf: destination, options: .mappedIfSafe),
+           Resources.verify(existing, hash: artifact.libraryHash) { return false }
         let data = try await http.fetch(artifact.url, nil)
         try require(Resources.verify(data, hash: artifact.archiveHash), "Unicorn archive failed integrity verification")
         let library = try UnicornArtifact.member(artifact.member, in: data)
         try require(Resources.verify(library, hash: artifact.libraryHash), "Unicorn library failed integrity verification")
         try Resources.writePrivate(library, to: destination)
+        return true
     }
 }

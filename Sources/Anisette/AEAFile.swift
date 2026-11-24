@@ -4,8 +4,8 @@ import CryptoExtras
 
 /// AEA symmetric-profile reader for public restore images.
 /// Authentication covers every header and segment before its plaintext is used.
-final class AEAFile {
-    struct Segment {
+final class AEAFile: Sendable {
+    struct Segment: Sendable {
         let offset: UInt64
         let compressed: Int
         let size: Int
@@ -20,6 +20,7 @@ final class AEAFile {
     let mainKey: Data
     let segments: [Segment]
     private let cache = AssetDataCache(maximum: 64 << 20)
+    private let inflight = Coalescer<Int, Data>(retainsValues: false)
 
     private init(source: AssetFile, size: UInt64, segmentSize: Int, mainKey: Data, segments: [Segment]) {
         self.source = source; self.size = size; self.segmentSize = segmentSize
@@ -131,22 +132,51 @@ final class AEAFile {
 
     var file: AssetFile {
         AssetFile(size: size) { offset, count in
-            var position = offset, result = Data()
+            if count == 0 { return Data() }
+            let startIndex = Int(offset / UInt64(self.segmentSize))
+            let endIndex = Int((offset + UInt64(count) - 1) / UInt64(self.segmentSize))
+            let decoded = try await self.decodeRange(startIndex...endIndex)
+            var position = offset
+            var result = Data()
+            result.reserveCapacity(count)
             while result.count < count {
                 let index = Int(position / UInt64(self.segmentSize))
-                let bytes = try await self.decode(index)
+                guard let bytes = decoded[index] else { throw AnisetteError("Missing AEA segment") }
                 let inside = Int(position % UInt64(self.segmentSize))
                 let length = min(count - result.count, bytes.count - inside)
                 try require(length > 0, "Incomplete AEA segment")
-                result.append(try bytes.bytes(at: inside, size: length)); position += UInt64(length)
+                result.append(try bytes.bytes(at: inside, size: length))
+                position += UInt64(length)
             }
             return result
+        }
+    }
+
+    private func decodeRange(_ range: ClosedRange<Int>) async throws -> [Int: Data] {
+        let maxConcurrency = 6
+        return try await withThrowingTaskGroup(of: (Int, Data).self) { group in
+            var decoded: [Int: Data] = [:]
+            for index in range {
+                if index - range.lowerBound >= maxConcurrency, let (done, data) = try await group.next() {
+                    decoded[done] = data
+                }
+                group.addTask { (index, try await self.decode(index)) }
+            }
+            for try await (index, data) in group { decoded[index] = data }
+            return decoded
         }
     }
 
     private func decode(_ index: Int) async throws -> Data {
         if let data = cache[UInt64(index)] { return data }
         try require(segments.indices.contains(index), "Missing AEA segment")
+        return try await inflight.load(index) {
+            if let data = self.cache[UInt64(index)] { return data }
+            return try await self.decodeUncached(index)
+        }
+    }
+
+    private func decodeUncached(_ index: Int) async throws -> Data {
         let segment = segments[index]
         let clusterKey = Self.derive(mainKey, info: Data("AEA_CK".utf8) + .littleEndian(segment.cluster), size: mainKey.count)
         let key = Self.derive(clusterKey, info: Data("AEA_SK".utf8) + .littleEndian(segment.index), size: 80)

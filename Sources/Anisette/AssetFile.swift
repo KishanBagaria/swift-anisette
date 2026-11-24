@@ -1,9 +1,9 @@
 import Foundation
 
 /// A bounded, random-access view. Views compose without downloading their parent.
-struct AssetFile {
+struct AssetFile: Sendable {
     let size: UInt64
-    let readBytes: (UInt64, Int) async throws -> Data
+    let readBytes: @Sendable (UInt64, Int) async throws -> Data
 
     func read(_ offset: UInt64, _ count: Int) async throws -> Data {
         try Task.checkCancellation()
@@ -29,7 +29,7 @@ struct AssetFile {
 /// The restore image is immutable and pinned along with its archive size (see PinnedBuild). The
 /// ZIP directory, AEA keys and segments, filesystem and cache layouts are read
 /// from the image itself, never from a generated extraction plan.
-final class RemoteAssetFile {
+final class RemoteAssetFile: Sendable {
     private let http: AnisetteHTTPClient
     private let url: URL
     private let size: UInt64
@@ -60,9 +60,10 @@ final class RemoteAssetFile {
     }
 }
 
-/// Extraction is serial within AssetInstaller. Each reader owns a bounded FIFO
-/// cache; no file or decrypted block cache survives an installation.
-final class AssetDataCache {
+/// Thread-safe bounded FIFO cache owned by each reader; no file or decrypted block cache
+/// survives an installation.
+final class AssetDataCache: @unchecked Sendable {
+    private let lock = NSLock()
     private let maximum: Int
     private var bytes = 0
     private var values: [UInt64: Data] = [:]
@@ -71,8 +72,14 @@ final class AssetDataCache {
     init(maximum: Int) { self.maximum = maximum }
 
     subscript(key: UInt64) -> Data? {
-        get { values[key] }
+        get {
+            lock.lock()
+            defer { lock.unlock() }
+            return values[key]
+        }
         set {
+            lock.lock()
+            defer { lock.unlock() }
             guard let data = newValue, data.count <= maximum else { return }
             if let old = values.removeValue(forKey: key) {
                 bytes -= old.count

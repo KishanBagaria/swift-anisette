@@ -19,26 +19,49 @@ actor AssetInstaller {
             return !Resources.verify(data, size: file.size, hash: file.hash)
         }.map { ($0.name, $0) })
         if missing.isEmpty { return }
-        func write(_ data: Data, name: String) throws {
-            guard let file = missing[name] else { throw AnisetteError("Unknown Apple asset") }
-            try require(Resources.verify(data, size: file.size, hash: file.hash),
-                        "Apple asset \(name) extracted from \(build.restoreImageURL.lastPathComponent) does not match the pinned "
-                            + "build. Retry once; if it fails again, update swift-anisette")
-            try Resources.writePrivate(data, to: directory.appendingPathComponent(name))
-        }
         let archive = try await RestoreArchive.open(RemoteAssetFile(http: http, build: build).file)
         let frameworks = Self.frameworkPaths.filter { missing[Self.name($0)] != nil }
-        if !frameworks.isEmpty {
-            let tree = try await archive.volume(build.system, http: http)
-            for path in frameworks { try write(await Self.framework(path, in: tree), name: Self.name(path)) }
+        let needsAMS = missing["AppleMediaServices"] != nil
+        let needsKernel = missing["FairPlayIOKit"] != nil
+        try await withThrowingTaskGroup(of: Void.self) { group in
+            if !frameworks.isEmpty {
+                group.addTask {
+                    let tree = try await archive.volume(build.system, http: http)
+                    for path in frameworks {
+                        let data = try await Self.framework(path, in: tree)
+                        try Self.verifyAndWrite(data, name: Self.name(path), missing: missing, build: build, directory: directory)
+                    }
+                }
+            }
+            if needsAMS {
+                group.addTask {
+                    let tree = try await archive.volume(build.sharedCache, http: http)
+                    let data = try await DyldAsset().extract(from: tree)
+                    try Self.verifyAndWrite(data, name: "AppleMediaServices", missing: missing, build: build, directory: directory)
+                }
+            }
+            if needsKernel {
+                group.addTask {
+                    let data = try MachOExtraction.kernel(await archive.kernelCollection(build.kernelCache))
+                    try Self.verifyAndWrite(data, name: "FairPlayIOKit", missing: missing, build: build, directory: directory)
+                }
+            }
+            try await group.waitForAll()
         }
-        if missing["AppleMediaServices"] != nil {
-            let tree = try await archive.volume(build.sharedCache, http: http)
-            try write(await DyldAsset().extract(from: tree), name: "AppleMediaServices")
-        }
-        if missing["FairPlayIOKit"] != nil {
-            try write(MachOExtraction.kernel(await archive.kernelCollection(build.kernelCache)), name: "FairPlayIOKit")
-        }
+    }
+
+    private static func verifyAndWrite(
+        _ data: Data,
+        name: String,
+        missing: [String: PinnedBuild.Asset],
+        build: PinnedBuild,
+        directory: URL
+    ) throws {
+        guard let file = missing[name] else { throw AnisetteError("Unknown Apple asset") }
+        try require(Resources.verify(data, size: file.size, hash: file.hash),
+                    "Apple asset \(name) extracted from \(build.restoreImageURL.lastPathComponent) does not match the pinned "
+                        + "build. Retry once; if it fails again, update swift-anisette")
+        try Resources.writePrivate(data, to: directory.appendingPathComponent(name))
     }
 
     static func name(_ path: String) -> String { URL(fileURLWithPath: path).lastPathComponent }

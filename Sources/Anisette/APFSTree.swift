@@ -7,14 +7,15 @@ import Crypto
 
 /// The read-only subset used by Apple's pinned restore volumes: physical object
 /// maps, virtual and sealed filesystem trees, and physical extent trees.
-final class APFSTree {
-    struct Record {
+/// Metadata fields are populated during `open(_:)` and immutable thereafter; `cache` is thread-safe.
+final class APFSTree: @unchecked Sendable {
+    struct Record: Sendable {
         let key: Data
         let value: Data
         var object: UInt64 { get throws { try key.integer(at: 0, as: UInt64.self) & 0x0fffffffffffffff } }
         var kind: UInt64 { get throws { try key.integer(at: 0, as: UInt64.self) >> 60 } }
     }
-    struct Node {
+    struct Node: Sendable {
         let flags: UInt16
         let level: UInt16
         let records: [Record]

@@ -2,8 +2,8 @@ import Foundation
 
 /// ZIP/ZIP64 directory discovery over HTTP ranges. Encrypted disk images are
 /// stored members and remain seekable; only the small kernel member is inflated.
-struct RestoreArchive {
-    struct Entry {
+struct RestoreArchive: Sendable {
+    struct Entry: Sendable {
         let name: String
         let method: UInt16
         let compressed: UInt64

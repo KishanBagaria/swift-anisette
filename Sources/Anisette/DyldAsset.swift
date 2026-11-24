@@ -4,7 +4,7 @@ import MachOKit
 /// Discovers shared-cache members, image segments, slide tables and symbols
 /// from the downloaded cache headers. Only the selected image's pages are read.
 final class DyldAsset {
-    struct Mapping {
+    struct Mapping: Sendable {
         let file: AssetFile
         let address: UInt64
         let size: UInt64

@@ -6,7 +6,7 @@ import Foundation
 import MachOKit
 
 enum APFSFile {
-    struct Extent { let logical: UInt64; let physical: UInt64; let length: UInt64 }
+    struct Extent: Sendable { let logical: UInt64; let physical: UInt64; let length: UInt64 }
 
     // swiftlint:disable:next cyclomatic_complexity
     static func open(_ path: String, in tree: APFSTree) async throws -> AssetFile {
@@ -102,7 +102,7 @@ enum APFSFile {
     }
 }
 
-final class DecmpfsFile {
+final class DecmpfsFile: Sendable {
     private let source: AssetFile
     private let size: UInt64
     private let method: UInt32
