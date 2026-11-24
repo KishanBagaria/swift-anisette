@@ -34,19 +34,25 @@ struct Profile: Sendable {
 
         static func withoutPointerAuthentication(_ value: UInt32) -> UInt32 {
             switch value & 0xfffffc00 {
+            // BRAA/BRAB/BRAAZ/BRABZ -> BR Xn
             case 0xd71f0800, 0xd71f0c00, 0xd61f0800, 0xd61f0c00: return 0xd61f0000 | (value & 0x3e0)
+            // BLRAA/BLRAB/BLRAAZ/BLRABZ -> BLR Xn
             case 0xd73f0800, 0xd73f0c00, 0xd63f0800, 0xd63f0c00: return 0xd63f0000 | (value & 0x3e0)
+            // PACIA/PACIB/PACDA/PACDB/AUTIA/AUTIB/AUTDA/AUTDB -> NOP
             case 0xdac10000, 0xdac10400, 0xdac10800, 0xdac10c00,
                  0xdac11000, 0xdac11400, 0xdac11800, 0xdac11c00: return 0xd503201f
             default: break
             }
             switch value {
+            // RETAA/RETAB -> RET
             case 0xd65f0bff, 0xd65f0fff: return 0xd65f03c0
+            // Hint-space PACIA1716/PACIB1716/AUTIA1716/AUTIB1716/PACIASP/PACIBSP/AUTIASP/AUTIBSP/XPACLRI -> NOP
             case 0xd503211f, 0xd503215f, 0xd503219f, 0xd50321df,
                  0xd503233f, 0xd503237f, 0xd50323bf, 0xd50323ff, 0xd50320ff: return 0xd503201f
             default: break
             }
             switch value & 0xffffffe0 {
+            // PACIZA/PACIZB/PACDZA/PACDZB/AUTIZA/AUTIZB/AUTDZA/AUTDZB/XPACI/XPACD -> NOP
             case 0xdac123e0, 0xdac127e0, 0xdac12be0, 0xdac12fe0, 0xdac133e0,
                  0xdac137e0, 0xdac13be0, 0xdac13fe0, 0xdac143e0, 0xdac147e0: return 0xd503201f
             default: return value
@@ -116,6 +122,11 @@ struct Profile: Sendable {
         }
     }
 
+    private static func original(_ name: String, in originals: [String: MachO]) throws -> MachO {
+        guard let image = originals[name] else { throw AnisetteError("Missing Apple image \(name)") }
+        return image
+    }
+
     static func load(assets: [String: Data], configuration: Configuration? = nil) throws -> Profile {
         let configuration = try configuration ?? Configuration.load()
         var originals: [String: MachO] = [:]
@@ -127,10 +138,10 @@ struct Profile: Sendable {
         for (imageName, base, names) in [
             ("CoreFP", UInt64(0x100000000000),
              ["_WIn9UJ86JKdV4dM", "_X46O5IeS", "_YlCJ3lg", "_dku592fbFAj", "_fdjkDSAFjklaf2s", "_lxpgvVMLd0S7uRl"]),
-            ("AppleMediaServices", originals["AppleMediaServices"]!.base,
+            ("AppleMediaServices", try original("AppleMediaServices", in: originals).base,
              ["_cp2g1b9ro", "_Mib5yocT", "_Fc3vhtJDvr", "_IPaI1oem5iL", "_jEHf8Xzsv8K"]),
         ] {
-            let image = originals[imageName]!
+            let image = try original(imageName, in: originals)
             let symbols = try image.exports()
             for name in names {
                 guard let value = symbols[name], value >= image.base else { throw AnisetteError("Missing Apple export \(name)") }
@@ -158,7 +169,7 @@ struct Profile: Sendable {
         let slots = try resolveTable(configuration.slots)
         var images: [Image] = []
         for (name, _) in bases {
-            var image = originals[name]!
+            var image = try original(name, in: originals)
             let base = try Self.base(of: name, image: image)
             if name == "AppleMediaServices" { try image.prelink(functions) } else {
                 try image.relocate(to: base, resolve: resolve)

@@ -104,7 +104,9 @@ final class ADIRuntime {
         }
         daemon.services.xpcReply = Data()
         daemon.services.xpcReplied = false
-        try invokeDaemonBlock(daemonHandler, argument: daemon.services.newXPCObject(request))
+        let requestObject = daemon.services.newXPCObject(request)
+        defer { try? daemon.services.releaseXPCObject(requestObject) }
+        try invokeDaemonBlock(daemonHandler, argument: requestObject)
         try require(daemon.services.xpcReplied && !daemon.services.xpcReply.isEmpty, "ADI daemon returned no reply")
         client.services.xpcSyncReply = daemon.services.xpcReply
         return try client.invoke(address, arguments: arguments)

@@ -1,5 +1,12 @@
 import Foundation
 
+private enum Sysconf {
+    static let pageSize: Int32 = 29
+    static let nprocessorsConf: Int32 = 57
+    static let nprocessorsOnln: Int32 = 58
+    static let physPages: Int32 = 200
+}
+
 extension GuestServices {
     // The cases implement Darwin's guest ABI, rather than calling host Darwin APIs.
     // swiftlint:disable cyclomatic_complexity function_body_length
@@ -53,18 +60,18 @@ extension GuestServices {
         case "compareAndSwap32":
             let address = try argument(2)
             let current = try engine.read(address, as: UInt32.self)
-            if current == UInt32(truncatingIfNeeded: try argument(0)) {
-                try engine.write(address, UInt32(truncatingIfNeeded: argument(1))); try result(1)
+            if current == (try argument32(0)) {
+                try engine.write(address, try argument32(1)); try result(1)
             } else { try result(0) }
         case "arc4random": try result(UInt64(UInt32.random(in: .min ... .max)))
         case "random31": try result(UInt64(UInt32.random(in: 0...0x7fffffff)))
         case "arc4randomUniform":
-            let upper = try argument(0)
-            try result(upper < 2 ? 0 : UInt64.random(in: 0..<upper))
+            let upper = try argument32(0)
+            try result(upper < 2 ? 0 : UInt64(UInt32.random(in: 0..<upper)))
         case "readRandom":
             let address = try argument(0), count = try argument(1)
             try require(count <= 64 << 20, "Guest random request exceeds limit")
-            try engine.write(address, Data((0..<count).map { _ in UInt8.random(in: .min ... .max) }))
+            try engine.write(address, Self.randomBytes(count: Int(count)))
             try result(0)
         case "notifyRegisterCheck", "notifyCheck", "notifyGetState":
             let address = try argument(1)
@@ -98,10 +105,10 @@ extension GuestServices {
         case "objcMsgSend": try result(string(argument(1)) == "objectForKey:" ? .max : 0)
         case "sysctlbyname": try sysctlService()
         case "sysconf":
-            switch try argument(0) {
-            case 29: try result(4096)
-            case 57, 58: try result(1)
-            case 200: try result(GuestMachine.heapSize / 4096)
+            switch try signedArgument32(0) {
+            case Sysconf.pageSize: try result(4096)
+            case Sysconf.nprocessorsConf, Sysconf.nprocessorsOnln: try result(1)
+            case Sysconf.physPages: try result(GuestMachine.heapSize / 4096)
             default: try result(.max)
             }
         case "pthreadOnce", "dispatchOnce": try once(name)
@@ -113,16 +120,38 @@ extension GuestServices {
     }
     // swiftlint:enable cyclomatic_complexity function_body_length
 
+    private static func randomBytes(count: Int) -> Data {
+        var generator = SystemRandomNumberGenerator()
+        var data = Data(count: count)
+        data.withUnsafeMutableBytes { buffer in
+            guard let base = buffer.baseAddress else { return }
+            var offset = 0
+            while offset < buffer.count {
+                var word = generator.next()
+                let chunk = min(8, buffer.count - offset)
+                withUnsafeBytes(of: &word) { bytes in
+                    if let source = bytes.baseAddress {
+                        base.advanced(by: offset).copyMemory(from: source, byteCount: chunk)
+                    }
+                }
+                offset += chunk
+            }
+        }
+        return data
+    }
+
     private func timeService(_ name: String) throws {
-        let time = Date().timeIntervalSince1970
-        let seconds = UInt64(time), microseconds = UInt32((time - floor(time)) * 1_000_000)
+        let time = max(0.0, now().timeIntervalSince1970)
+        let seconds = UInt64(time)
+        let microseconds = min(999_999, UInt32((time - floor(time)) * 1_000_000))
         let address = try argument(0)
         if name == "currentTime" {
             if address != 0 { try engine.write(address, seconds) }
             try result(seconds)
         } else if name == "clockGetCalendarMicrotime" {
-            try engine.write(address, UInt32(truncatingIfNeeded: seconds))
-            try engine.write(argument(1), microseconds)
+            if address != 0 { try engine.write(address, UInt32(truncatingIfNeeded: seconds)) }
+            let microsecondAddress = try argument(1)
+            if microsecondAddress != 0 { try engine.write(microsecondAddress, microseconds) }
             try result(0)
         } else {
             if address != 0 {

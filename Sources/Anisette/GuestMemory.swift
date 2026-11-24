@@ -5,21 +5,35 @@ extension GuestServices {
         try require(size <= GuestMachine.heapSize && alignment > 0 && alignment <= GuestMachine.heapSize
                     && alignment & (alignment - 1) == 0, "Invalid guest allocation")
         let reserved = try guestAligned(max(size, 1), to: alignment)
-        if alignment == 16, let index = freeBlocks.firstIndex(where: { $0.upperBound - $0.lowerBound >= reserved }) {
-            let block = freeBlocks[index]
-            let address = block.lowerBound
-            if address + reserved == block.upperBound { freeBlocks.remove(at: index) } else {
-                freeBlocks[index] = address + reserved..<block.upperBound
-            }
+        if let address = try takeFreeBlock(reserved: reserved, alignment: alignment) {
             allocations[address] = Allocation(size: size, reserved: reserved)
             return address
         }
-        let cursor = try guestAligned(heapCursor, to: alignment)
+        let previousCursor = heapCursor
+        let cursor = try guestAligned(previousCursor, to: alignment)
         try require(cursor <= GuestMachine.heapSize - reserved, "Guest heap exhausted")
         let address = GuestMachine.heapBase + cursor
         heapCursor = cursor + reserved
+        if cursor > previousCursor {
+            freeBlocks.append(GuestMachine.heapBase + previousCursor..<address)
+        }
         allocations[address] = Allocation(size: size, reserved: reserved)
         return address
+    }
+
+    private func takeFreeBlock(reserved: UInt64, alignment: UInt64) throws -> UInt64? {
+        for index in freeBlocks.indices {
+            let block = freeBlocks[index]
+            let alignedStart = try guestAligned(block.lowerBound, to: alignment)
+            guard alignedStart <= block.upperBound, block.upperBound - alignedStart >= reserved else { continue }
+            let alignedEnd = alignedStart + reserved
+            var replacements: [Range<UInt64>] = []
+            if block.lowerBound < alignedStart { replacements.append(block.lowerBound..<alignedStart) }
+            if alignedEnd < block.upperBound { replacements.append(alignedEnd..<block.upperBound) }
+            freeBlocks.replaceSubrange(index...index, with: replacements)
+            return alignedStart
+        }
+        return nil
     }
 
     func release(_ address: UInt64) throws {

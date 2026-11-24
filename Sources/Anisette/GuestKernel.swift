@@ -95,8 +95,7 @@ extension GuestServices {
         let source = try engine.read(guestAddress(sourceBase, offset: arguments[7]), length)
         let iv = try engine.read(arguments[4], 16)
         let keyData = try engine.read(arguments[6], 40)
-        let (destination, nextIV) = try Self.ioAES(source, iv: iv,
-                                                   operation: UInt32(truncatingIfNeeded: arguments[5]), keyData: keyData)
+        let (destination, nextIV) = try Self.ioAES(source, iv: iv, operation: try argument32(5), keyData: keyData)
         try engine.write(guestAddress(destinationBase, offset: arguments[8]), destination)
         try engine.write(arguments[4], nextIV)
         try result(0)
@@ -120,7 +119,7 @@ extension GuestServices {
     }
 
     private func ioConnect() throws {
-        let selector = try argument(1), count = try argument(3), sizeAddress = try argument(5)
+        let selector = try argument32(1), count = try argument(3), sizeAddress = try argument(5)
         let capacity: UInt64 = try sizeAddress == 0 ? 0 : engine.read(sizeAddress, as: UInt64.self)
         try require(count <= 1 << 20 && capacity <= 1 << 20, "IOKit buffer exceeds limit")
         let input = try engine.read(argument(2), count)

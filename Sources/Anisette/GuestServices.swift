@@ -29,7 +29,8 @@ final class GuestServices {
     var filePath = ""
     var fileOffset = 0
     var icxsOffset = 0
-    struct XPCObject { var data: Data?; var address: UInt64 = 0 }
+    var now: () -> Date = { Date() }
+    struct XPCObject { var data: Data?; var address: UInt64 = 0; var retainCount = 1 }
     var xpcObjects: [UInt64: XPCObject] = [:]
     var nextXPC: UInt64 = 0xffff000000000000
     var xpcData = Data()
@@ -114,6 +115,14 @@ final class GuestServices {
     func argument(_ index: Int) throws -> UInt64 {
         if index < 8 { return try engine.register(Unicorn.x0 + Int32(index)) }
         return try engine.read(guestAddress(engine.register(Unicorn.sp), offset: UInt64((index - 8) * 8)), as: UInt64.self)
+    }
+
+    func argument32(_ index: Int) throws -> UInt32 {
+        UInt32(truncatingIfNeeded: try argument(index))
+    }
+
+    func signedArgument32(_ index: Int) throws -> Int32 {
+        Int32(bitPattern: try argument32(index))
     }
 
     func result(_ value: UInt64) throws { try engine.register(Unicorn.x0, value) }

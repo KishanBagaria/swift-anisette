@@ -32,7 +32,11 @@ extension GuestServices {
             let object = try argument(0), count = try argument(3)
             try require(count <= 1 << 20, "XPC data exceeds limit")
             xpcData = try engine.read(argument(2), count)
-            xpcObjects[object]?.data = xpcData
+            if var value = xpcObjects[object] {
+                try releaseXPCBuffer(&value)
+                value.data = xpcData
+                xpcObjects[object] = value
+            }
             try result(0)
         case "xpcDictionaryGetData":
             let object = try argument(0), lengthAddress = try argument(2)
@@ -47,15 +51,26 @@ extension GuestServices {
             }
             if lengthAddress != 0 { try engine.write(lengthAddress, UInt64(data.count)) }
             try result(value.address)
+        case "xpcRetain":
+            let object = try argument(0)
+            if var value = xpcObjects[object] {
+                value.retainCount += 1
+                xpcObjects[object] = value
+            }
+            try result(object)
+        case "xpcRelease":
+            try releaseXPCObject(argument(0))
+            try result(0)
         case "machMsgRPCFromKernel":
-            let address = try argument(0), count = try argument(1), capacity = try argument(2)
+            let address = try argument(0)
+            let count = UInt64(try argument32(1)), capacity = UInt64(try argument32(2))
             try require(count > 0 && count <= 1 << 20 && capacity <= 1 << 20, "Invalid Mach RPC size")
             guard let machRPCHandler else { throw AnisetteError("Missing Mach RPC handler") }
             let reply = try machRPCHandler(engine.read(address, count), Int(capacity))
             try require(!reply.isEmpty && reply.count <= capacity, "Invalid Mach RPC reply")
             try engine.write(address, reply); try result(0)
         case "machMsg":
-            let address = try argument(0), size = try argument(2)
+            let address = try argument(0), size = UInt64(try argument32(2))
             try require(size > 0 && size <= 1 << 20, "Invalid Mach message size")
             machMessageReply = try engine.read(address, size)
             try result(0)
@@ -64,4 +79,22 @@ extension GuestServices {
         return true
     }
     // swiftlint:enable cyclomatic_complexity
+
+    func releaseXPCObject(_ object: UInt64) throws {
+        guard var value = xpcObjects[object] else { return }
+        value.retainCount -= 1
+        if value.retainCount > 0 {
+            xpcObjects[object] = value
+            return
+        }
+        xpcObjects.removeValue(forKey: object)
+        try releaseXPCBuffer(&value)
+    }
+
+    private func releaseXPCBuffer(_ value: inout XPCObject) throws {
+        if value.address != 0, allocations[value.address] != nil {
+            try release(value.address)
+        }
+        value.address = 0
+    }
 }

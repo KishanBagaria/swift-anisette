@@ -14,6 +14,13 @@ final class GuestMachine {
     let services: GuestServices
     private var scratchCursor: UInt64 = 0
 
+    static func requiredImages(for name: String) -> Set<String> {
+        switch name {
+        case "commerce": [name, "CoreFP", "AppleMediaServices"]
+        default: [name]
+        }
+    }
+
     init(name: String, profile: Profile, library: UnicornLibrary,
          cancellation: Cancellation, pauseRunLoop: Bool = false) throws {
         engine = try Unicorn(library: library, cancellation: cancellation)
@@ -23,8 +30,18 @@ final class GuestMachine {
         }
         try engine.write(Self.returnAddress, UInt32(0xd4200000))
         services = try GuestServices(engine: engine, profile: profile, pauseRunLoop: pauseRunLoop)
+        let required = Self.requiredImages(for: name)
+        if required.contains("AppleMediaServices") {
+            try mapSharedCacheTables(from: profile)
+        }
+        for image in profile.images where required.contains(image.name) {
+            try image.load(into: engine)
+        }
+    }
+
+    private func mapSharedCacheTables(from profile: Profile) throws {
+        var mapped = Set<UInt64>()
         for (table, functions) in [(profile.functions, true), (profile.slots, false)] {
-            var mapped = Set<UInt64>()
             for (address, target) in table {
                 for page in [address & ~UInt64(4095), try guestAddress(address, offset: functions ? 15 : 7) & ~UInt64(4095)] {
                     if mapped.insert(page).inserted { try engine.map(page, 4096) }
@@ -34,9 +51,6 @@ final class GuestMachine {
                         + Data.littleEndian(UInt32(0xd61f0200)) + Data.littleEndian(target))
                 } else { try engine.write(address, target) }
             }
-        }
-        for image in profile.images where image.name == "CoreFP" || image.name == "AppleMediaServices" || image.name == name {
-            try image.load(into: engine)
         }
     }
 
@@ -100,46 +114,60 @@ final class GuestMachine {
 
     private func generalRegister(_ index: UInt32) -> Int32 {
         switch index {
-        case 29: 1
+        case 29: Unicorn.fp
         case 30: Unicorn.lr
         default: Unicorn.x0 + Int32(index)
         }
     }
 
-    private func emulateUnsupportedInstruction() throws -> Bool {
+    private func readGeneral(_ index: UInt32, mask: UInt64 = .max) throws -> UInt64 {
+        index == 31 ? 0 : try engine.register(generalRegister(index)) & mask
+    }
+
+    private func writeAtomic(_ value: UInt64, to address: UInt64, width: UInt64) throws {
+        if width == 4 { try engine.write(address, UInt32(truncatingIfNeeded: value)) } else { try engine.write(address, value) }
+    }
+
+    func emulateUnsupportedInstruction() throws -> Bool {
         let pc = try engine.register(Unicorn.pc)
         guard let instruction = try? engine.read(pc, as: UInt32.self) else { return false }
+        // EOR3 Vd.16B, Vn.16B, Vm.16B, Va.16B (ARMv8.2 SHA3): 11001110_000_Rm_0_Ra_Rn_Rd
         if instruction & 0xffe08000 == 0xce000000 {
-            let first = try engine.vector(228 + Int32((instruction >> 5) & 31))
-            let second = try engine.vector(228 + Int32((instruction >> 16) & 31))
-            let third = try engine.vector(228 + Int32((instruction >> 10) & 31))
+            let first = try engine.vector(Unicorn.v0 + Int32((instruction >> 5) & 31))
+            let second = try engine.vector(Unicorn.v0 + Int32((instruction >> 16) & 31))
+            let third = try engine.vector(Unicorn.v0 + Int32((instruction >> 10) & 31))
             let result = Data((0..<16).map { first[$0] ^ second[$0] ^ third[$0] })
-            try engine.vector(228 + Int32(instruction & 31), result)
-        } else {
-            let opcode = instruction & 0xffe0fc00
-            guard [0x88e0fc00, 0xc8e0fc00, 0xb8e08000, 0xf8e08000].contains(opcode) else { return false }
-            let width: UInt64 = opcode == 0x88e0fc00 || opcode == 0xb8e08000 ? 4 : 8
-            let source = (instruction >> 16) & 31
-            let base = (instruction >> 5) & 31
-            let destination = instruction & 31
-            let address = try engine.register(base == 31 ? Unicorn.sp : generalRegister(base))
-            var bytes = try engine.read(address, width)
-            bytes.append(Data(count: 8 - Int(width)))
-            let old: UInt64 = try bytes.integer(at: 0)
-            let mask: UInt64 = width == 4 ? 0xffffffff : .max
-            let value = try source == 31 ? 0 : engine.register(generalRegister(source)) & mask
-            if opcode == 0x88e0fc00 || opcode == 0xc8e0fc00 {
-                if old == value {
-                    let replacement = try destination == 31 ? 0 : engine.register(generalRegister(destination)) & mask
-                    try engine.write(address, Data(Data.littleEndian(replacement).prefix(Int(width))))
-                }
-                if source != 31 { try engine.register(generalRegister(source), old) }
-            } else {
-                try engine.write(address, Data(Data.littleEndian(value).prefix(Int(width))))
-                if destination != 31 { try engine.register(generalRegister(destination), old) }
-            }
+            try engine.vector(Unicorn.v0 + Int32(instruction & 31), result)
+        } else if try !emulateAtomic(instruction) {
+            return false
         }
         try engine.register(Unicorn.pc, guestAddress(pc, offset: 4))
+        return true
+    }
+
+    private func emulateAtomic(_ instruction: UInt32) throws -> Bool {
+        // ARMv8.1 LSE CAS/CASA/CASL/CASAL (32/64-bit): 1x_0010001_L_1_Rs_o0_11111_Rn_Rt
+        let isCAS = instruction & 0xbfa07c00 == 0x88a07c00
+        // ARMv8.1 LSE SWP/SWPA/SWPL/SWPAL (32/64-bit): 1x_111000_A_R_1_Rs_100000_Rn_Rt
+        let isSWP = instruction & 0xbf20fc00 == 0xb8208000
+        guard isCAS || isSWP else { return false }
+        let width: UInt64 = instruction & 0x40000000 == 0 ? 4 : 8
+        let mask: UInt64 = width == 4 ? 0xffffffff : .max
+        let source = (instruction >> 16) & 31
+        let base = (instruction >> 5) & 31
+        let destination = instruction & 31
+        let address = try engine.register(base == 31 ? Unicorn.sp : generalRegister(base))
+        let old = try width == 4 ? UInt64(engine.read(address, as: UInt32.self)) : engine.read(address, as: UInt64.self)
+        let value = try readGeneral(source, mask: mask)
+        if isCAS {
+            if old == value {
+                try writeAtomic(readGeneral(destination, mask: mask), to: address, width: width)
+            }
+            if source != 31 { try engine.register(generalRegister(source), old) }
+        } else {
+            try writeAtomic(value, to: address, width: width)
+            if destination != 31 { try engine.register(generalRegister(destination), old) }
+        }
         return true
     }
 }

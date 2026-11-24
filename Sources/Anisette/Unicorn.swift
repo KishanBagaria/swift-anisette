@@ -27,9 +27,12 @@ final class UnicornLibrary {
 }
 
 final class Unicorn {
-    static let x0: Int32 = 199
+    // ARM64 register IDs from Unicorn 2.1's arm64.h.
+    static let fp: Int32 = 1
     static let lr: Int32 = 2
     static let sp: Int32 = 4
+    static let x0: Int32 = 199
+    static let v0: Int32 = 228
     static let pc: Int32 = 260
     let pointer: OpaquePointer
     private let library: UnicornLibrary
