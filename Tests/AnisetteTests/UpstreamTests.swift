@@ -24,4 +24,23 @@ struct UpstreamTests {
         let library = try UnicornArtifact.member(artifact.member, in: archive)
         #expect(Resources.hash(library) == artifact.libraryHash)
     }
+
+    #if os(macOS) || os(Linux)
+    /// Checks Apple's IPSW catalog for a newer macOS release than the pinned build.
+    /// Logs a GitHub Actions notice without failing the liveness check.
+    @Test func checkForNewerAppleRelease() async {
+        do {
+            let current = try PinnedBuild.current().restoreImageURL
+            let latest = try await BuildRotation.latestRestoreImage(.live)
+            if latest != current {
+                print("::notice::Newer macOS restore image available: \(latest.absoluteString) "
+                    + "(pinned: \(current.lastPathComponent)). Run `make rotate` to update.")
+            } else {
+                print("Pinned macOS restore image is up to date (\(current.lastPathComponent)).")
+            }
+        } catch {
+            print("::warning::Could not check Apple's IPSW catalog for newer releases: \(error)")
+        }
+    }
+    #endif
 }

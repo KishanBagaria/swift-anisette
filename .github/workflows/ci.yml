@@ -15,7 +15,11 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-26, ubuntu-24.04]
+        include:
+          - os: macos-26
+            cache_dir: Library/Caches/swift-anisette
+          - os: ubuntu-24.04
+            cache_dir: .cache/swift-anisette
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     steps:
@@ -43,17 +47,15 @@ jobs:
       # The asset directory name is fixed; the cache key changes with the pinned build.
       - name: Cache Apple assets and Unicorn
         id: assets
-        if: runner.os == 'macOS'
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
-          path: ~/Library/Caches/swift-anisette
-          key: anisette-assets-${{ hashFiles('Sources/Anisette/Resources/Profile.json', 'Sources/Anisette/UnicornArtifact.swift') }}
+          path: ~/${{ matrix.cache_dir }}
+          key: anisette-assets-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Sources/Anisette/Resources/Profile.json', 'Sources/Anisette/UnicornArtifact.swift') }}
       - name: Install Apple assets and Unicorn
-        if: runner.os == 'macOS' && steps.assets.outputs.cache-hit != 'true'
-        run: ANISETTE_TEST_ASSETS=1 ANISETTE_APPLE_DIR="$HOME/Library/Caches/swift-anisette/ci-apple-assets" swift test --filter nativeAssetInstallation
+        if: steps.assets.outputs.cache-hit != 'true'
+        run: ANISETTE_TEST_ASSETS=1 ANISETTE_APPLE_DIR="$HOME/${{ matrix.cache_dir }}/ci-apple-assets" swift test --filter nativeAssetInstallation
       - name: Test cached runtime
-        if: runner.os == 'macOS'
-        run: ANISETTE_APPLE_DIR="$HOME/Library/Caches/swift-anisette/ci-apple-assets" swift test --filter AnisetteTests
+        run: ANISETTE_APPLE_DIR="$HOME/${{ matrix.cache_dir }}/ci-apple-assets" swift test --filter AnisetteTests
 
   lint:
     runs-on: macos-26

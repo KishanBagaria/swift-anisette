@@ -24,8 +24,13 @@ jobs:
           gpg --batch --import "$RUNNER_TEMP/swift-signing-keys.asc"
       - uses: swift-actions/setup-swift@d8e84bc3a450686a95474d7d6fa4a3301498debc # v3
         with:
-          swift-version: '6.3.3'
+          swift-version: '6.2'
       - name: Verify pinned upstream downloads
-        run: swift test --filter UpstreamTests
+        run: swift test --filter 'UpstreamTests/pinned'
+        env:
+          ANISETTE_TEST_UPSTREAM: '1'
+      - name: Check for newer macOS release
+        continue-on-error: true
+        run: swift test --filter 'UpstreamTests/checkForNewerAppleRelease'
         env:
           ANISETTE_TEST_UPSTREAM: '1'
