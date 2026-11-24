@@ -43,13 +43,14 @@ let otp = try await AnisetteContext.with(
 // otp.machineID and otp.password contain the anisette data.
 ```
 
-For a new identity, exchange the challenges with Apple's servers; the example implements `sendToApple`. `startProvisioning` returns a `ProvisioningSession` holding the client challenge to send to Apple; its `finish` returns the new provisioning state:
+For a new identity, exchange the challenges with Apple's servers; the example implements `sendToApple`. `AnisetteContext.provision` opens a dedicated context, passes the client challenge (`cpim`) to your closure, finishes with Apple's reply (`ptm` and `tk`), and returns the new provisioning state:
 
 ```swift
-let state = try await AnisetteContext.with(identifier: stableDeviceUUID) { context in
-    let session = try await context.startProvisioning(challenge: serverChallenge)
-    let (metadata, trustKey) = try await sendToApple(session.clientChallenge)
-    return try await session.finish(metadata: metadata, trustKey: trustKey)
+let state = try await AnisetteContext.provision(
+    identifier: stableDeviceUUID,
+    challenge: serverChallenge
+) { clientChallenge in
+    try await sendToApple(clientChallenge)
 }
 // Save state, then:
 let otp = try await AnisetteContext.with(identifier: stableDeviceUUID, provisioningState: state) { context in
@@ -57,9 +58,9 @@ let otp = try await AnisetteContext.with(identifier: stableDeviceUUID, provision
 }
 ```
 
-`finish` ends the context's runtime whether it succeeds or throws, so request OTPs from a second context opened with the returned state. Afterwards every call on the first context throws `AnisetteError`. While a session is open, `requestOTP()` and another `startProvisioning` throw; close the context to abandon it. If ADI rejects the server challenge, `startProvisioning` throws with `adiStatus` set and the context stays usable.
+For split provisioning flows, call `startProvisioning(challenge:)` on an open context to get a `ProvisioningSession` holding `clientChallenge`, then call `session.finish(metadata:trustKey:)`. `finish` ends the context's runtime whether it succeeds or throws, so request OTPs from a second context opened with the returned state. Afterwards every call on the first context throws `AnisetteError`. While a session is open, `requestOTP()` and another `startProvisioning` throw; close the context to abandon it. If ADI rejects the server challenge, `startProvisioning` throws with `adiStatus` set and the context stays usable.
 
-`otp.headers(identifier:routingInfo:system:date:timeZone:locale:)` builds the anisette request headers (`X-Apple-I-MD`, `X-Apple-I-MD-M`, `X-Apple-I-MD-RINFO`, `X-Apple-I-MD-LU`, `X-Mme-Device-Id`, `X-MMe-Client-Info`, `X-Apple-I-SRL-NO`, `X-Apple-I-Client-Time`, `X-Apple-I-TimeZone`, `X-Apple-Locale`). `routingInfo` is the `X-Apple-I-MD-RINFO` value Apple returns when provisioning finishes, which the caller stores with the state; `system` is normally `AnisetteSystemInfo.current()`.
+`otp.headers(identifier:routingInfo:system:)` builds the anisette request headers (`X-Apple-I-MD`, `X-Apple-I-MD-M`, `X-Apple-I-MD-RINFO`, `X-Apple-I-MD-LU`, `X-Mme-Device-Id`, `X-MMe-Client-Info`, `X-Apple-I-SRL-NO`, `X-Apple-I-Client-Time`, `X-Apple-I-TimeZone`, `X-Apple-Locale`), defaulting `date`, `timeZone`, and `locale` to `Date()`, `.current`, and `.current`. `routingInfo` is the `X-Apple-I-MD-RINFO` value Apple returns when provisioning finishes, which the caller stores with the state; `system` is normally `AnisetteSystemInfo.current()`. Use `system.deviceHeaders(identifier:)` for Apple requests that need the device headers without an OTP (such as provisioning).
 
 `open(identifier:provisioningState:)` and `close()` remain available for contexts that must outlive a single scope.
 
@@ -67,9 +68,9 @@ Keep each identity's UUID stable and serialize its entire read → generate → 
 
 ## Runtime
 
-First use downloads Unicorn and extracts the required files from Apple's public restore image. This fetches about 215 MB in ranged requests, takes a few minutes, and keeps about 90 MB. Downloads are verified and cached in the user's cache directory under `swift-anisette`. Nothing is logged meanwhile; wrap `AnisetteHTTPClient.live` in your own `httpClient` to report progress, as the example does.
+First use downloads Unicorn and extracts the required files from Apple's public restore image. This fetches about 215 MB in ranged requests, takes a few minutes, and keeps about 90 MB. Downloads are verified and cached in the user's cache directory under `swift-anisette`. Call `AnisetteContext.prepare(configuration:)` at startup to pre-warm and verify the runtime without opening a context. Nothing is logged meanwhile; wrap `AnisetteHTTPClient.live` in your own `httpClient` to report progress, as the example does.
 
-Pass an `AnisetteConfiguration` to `open` or `with` for a custom cache (`cacheDirectory`), offline assets (`appleDirectory`, `unicornLibrary`), or your own downloader (`httpClient`):
+Pass an `AnisetteConfiguration` to `prepare`, `open`, `with`, or `provision` for a custom cache (`cacheDirectory`), offline assets (`appleDirectory`, `unicornLibrary`), or your own downloader (`httpClient`):
 
 ```swift
 let configuration = AnisetteConfiguration(cacheDirectory: appSupport.appendingPathComponent("anisette"))
@@ -78,7 +79,7 @@ try await AnisetteContext.with(identifier: id, provisioningState: state, configu
 
 ## Errors
 
-The library throws `AnisetteError`, or `CancellationError` when the task is cancelled or the context is closed. When Apple's ADI rejects a call, `adiStatus` holds its status code; `AnisetteError.notProvisionedStatus` means the identity must be provisioned first.
+The library throws `AnisetteError` (conforming to `LocalizedError`), or `CancellationError` when the task is cancelled or the context is closed. When Apple's ADI rejects a call, `adiStatus` holds its status code; `AnisetteError.notProvisionedStatus` means the identity must be provisioned first.
 
 ## Development
 

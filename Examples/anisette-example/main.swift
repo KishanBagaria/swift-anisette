@@ -1,5 +1,4 @@
 import Anisette
-import Crypto
 import Foundation
 #if canImport(FoundationNetworking)
 import FoundationNetworking
@@ -34,19 +33,11 @@ let configuration = AnisetteConfiguration(httpClient: AnisetteHTTPClient { url, 
 let system = try AnisetteSystemInfo.current()
 
 func appleRequest(_ url: URL, identifier: UUID, body: [String: Any]? = nil) async throws -> [String: Any] {
-    let now = Date()
-    let clock = ISO8601DateFormatter()
-    clock.timeZone = TimeZone(secondsFromGMT: 0)
-    let uuidBytes = withUnsafeBytes(of: identifier.uuid) { Data($0) }
     var request = URLRequest(url: url)
     request.setValue(system.akdUserAgent, forHTTPHeaderField: "User-Agent")
-    request.setValue(system.clientInfo, forHTTPHeaderField: "X-MMe-Client-Info")
-    request.setValue(identifier.uuidString.lowercased(), forHTTPHeaderField: "X-Mme-Device-Id")
-    request.setValue(SHA256.hash(data: uuidBytes).map { String(format: "%02x", $0) }.joined(), forHTTPHeaderField: "X-Apple-I-MD-LU")
-    request.setValue("0", forHTTPHeaderField: "X-Apple-I-SRL-NO")
-    request.setValue(clock.string(from: now), forHTTPHeaderField: "X-Apple-I-Client-Time")
-    request.setValue(TimeZone.current.abbreviation(for: now), forHTTPHeaderField: "X-Apple-I-TimeZone")
-    request.setValue(Locale.current.identifier, forHTTPHeaderField: "X-Apple-Locale")
+    for (name, value) in system.deviceHeaders(identifier: identifier) {
+        request.setValue(value, forHTTPHeaderField: name)
+    }
     if let body {
         request.httpMethod = "POST"
         request.setValue("text/x-xml-plist", forHTTPHeaderField: "Content-Type")
@@ -75,15 +66,20 @@ func provision(_ identifier: UUID) async throws -> Identity {
     let urls = try field("urls", in: lookup) { $0 as? [String: Any] }
     let start = try await appleRequest(string("midStartProvisioning", in: urls, URL.init), identifier: identifier, body: [:])
     let serverChallenge = try string("spim", in: start) { Data(base64Encoded: $0) }
-    return try await AnisetteContext.with(identifier: identifier, configuration: configuration) { context in
-        let session = try await context.startProvisioning(challenge: serverChallenge)
+    var routingInfo: UInt64 = 0
+    let state = try await AnisetteContext.provision(
+        identifier: identifier,
+        challenge: serverChallenge,
+        configuration: configuration
+    ) { clientChallenge in
         let finish = try await appleRequest(string("midFinishProvisioning", in: urls, URL.init), identifier: identifier,
-                                            body: ["cpim": session.clientChallenge.base64EncodedString()])
-        let routingInfo = try string("X-Apple-I-MD-RINFO", in: finish) { UInt64($0) }
-        let state = try await session.finish(metadata: string("ptm", in: finish) { Data(base64Encoded: $0) },
-                                             trustKey: string("tk", in: finish) { Data(base64Encoded: $0) })
-        return Identity(identifier: identifier, routingInfo: routingInfo, provisioningState: state)
+                                            body: ["cpim": clientChallenge.base64EncodedString()])
+        routingInfo = try string("X-Apple-I-MD-RINFO", in: finish) { UInt64($0) }
+        let metadata = try string("ptm", in: finish) { Data(base64Encoded: $0) }
+        let trustKey = try string("tk", in: finish) { Data(base64Encoded: $0) }
+        return (metadata, trustKey)
     }
+    return Identity(identifier: identifier, routingInfo: routingInfo, provisioningState: state)
 }
 
 var identity: Identity
@@ -101,6 +97,5 @@ let otp = try await AnisetteContext.with(identifier: identity.identifier, provis
 identity.provisioningState = otp.provisioningState
 try save(identity)
 
-let headers = otp.headers(identifier: identity.identifier, routingInfo: identity.routingInfo, system: system,
-                          date: Date(), timeZone: .current, locale: .current)
+let headers = otp.headers(identifier: identity.identifier, routingInfo: identity.routingInfo, system: system)
 for (name, value) in headers.sorted(by: { $0.key < $1.key }) { print("\(name): \(value)") }

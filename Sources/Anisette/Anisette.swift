@@ -3,13 +3,16 @@ import Foundation
 /// Configuration for the verified data and native Unicorn library used by Anisette.
 /// Set either URL to use an offline installation rather than the default cache.
 public struct AnisetteConfiguration: Sendable {
+    /// Directory containing verified Apple assets for offline use; when `nil`, assets are cached in `cacheDirectory`.
     public var appleDirectory: URL?
+    /// Path to a preinstalled `libunicorn` shared library; when `nil`, the pinned wheel is cached in `cacheDirectory`.
     public var unicornLibrary: URL?
+    /// Directory used to cache downloaded Apple assets and the Unicorn runtime.
     public var cacheDirectory: URL
     /// Performs the first-use downloads. Everything it returns is verified against pinned hashes.
     public var httpClient: AnisetteHTTPClient
 
-    /// Download cache; Linux honors an absolute XDG_CACHE_HOME.
+    /// Download cache; Linux honors an absolute `XDG_CACHE_HOME`.
     public static var defaultCacheDirectory: URL {
         #if os(Linux)
         let path = ProcessInfo.processInfo.environment["XDG_CACHE_HOME"]
@@ -21,6 +24,7 @@ public struct AnisetteConfiguration: Sendable {
         return root.appendingPathComponent("swift-anisette")
     }
 
+    /// Creates a configuration for locating or downloading Apple assets and the Unicorn library.
     public init(
         appleDirectory: URL? = nil,
         unicornLibrary: URL? = nil,
@@ -53,6 +57,15 @@ public final class AnisetteContext: Sendable {
         Worker.shared.queue.async { state.phase = .closed }
     }
 
+    /// Downloads, verifies, and caches the Apple assets and Unicorn runtime for `configuration`
+    /// without opening a context.
+    public static func prepare(configuration: AnisetteConfiguration = AnisetteConfiguration()) async throws {
+        _ = try await Resources.load(configuration: configuration)
+    }
+
+    /// Opens a virtual Mac context for `identifier`, optionally restoring a previously persisted
+    /// `provisioningState`. Call `close()` when finished, or use `with(identifier:provisioningState:configuration:_:)`
+    /// to scope the lifetime automatically.
     public static func open(
         identifier: UUID,
         provisioningState: Data = Data(),
@@ -88,6 +101,38 @@ public final class AnisetteContext: Sendable {
         } catch {
             await context.close()
             throw error
+        }
+    }
+
+    /// Provisions a new virtual Mac identity in a dedicated context, passing the client challenge
+    /// (`cpim`) to `exchange` and finishing with Apple's reply (`ptm` and `tk`).
+    public static func provision(
+        identifier: UUID,
+        challenge: Data,
+        configuration: AnisetteConfiguration = AnisetteConfiguration(),
+        isolation: isolated (any Actor)? = #isolation,
+        exchange: (_ clientChallenge: Data) async throws -> (metadata: Data, trustKey: Data)
+    ) async throws -> Data {
+        try await provision(
+            identifier: identifier,
+            configuration: configuration,
+            isolation: isolation,
+            start: { try await $0.startProvisioning(challenge: challenge) },
+            exchange: exchange
+        )
+    }
+
+    static func provision(
+        identifier: UUID,
+        configuration: AnisetteConfiguration,
+        isolation: isolated (any Actor)? = #isolation,
+        start: (AnisetteContext) async throws -> ProvisioningSession,
+        exchange: (_ clientChallenge: Data) async throws -> (metadata: Data, trustKey: Data)
+    ) async throws -> Data {
+        try await with(identifier: identifier, configuration: configuration, isolation: isolation) { context in
+            let session = try await start(context)
+            let (metadata, trustKey) = try await exchange(session.clientChallenge)
+            return try await session.finish(metadata: metadata, trustKey: trustKey)
         }
     }
 
@@ -134,12 +179,17 @@ public final class AnisetteContext: Sendable {
         }
     }
 
-    public struct OTP: Sendable {
+    /// An anisette one-time password returned by `AnisetteContext.requestOTP()`.
+    public struct OTP: Sendable, Equatable, Hashable {
+        /// The identity's machine ID (`X-Apple-I-MD-M`, before base64 encoding).
         public let machineID: Data
+        /// The one-time password (`X-Apple-I-MD`, before base64 encoding).
         public let password: Data
+        /// Updated provisioning state that the caller must persist before the next request.
         public let provisioningState: Data
     }
 
+    /// Requests a new one-time password and updated provisioning state for this identity.
     /// Throws `AnisetteError` with `adiStatus == AnisetteError.notProvisionedStatus` for an
     /// identity that has not been provisioned.
     public func requestOTP() async throws -> OTP {
@@ -159,11 +209,23 @@ public final class AnisetteContext: Sendable {
         }
     }
 
+    /// Cancels any active operation and tears down the underlying Unicorn engines. Safe to call multiple times.
     public func close() async {
         cancellation.cancel()
         let state = state
         await withCheckedContinuation { continuation in
             Worker.shared.queue.async { state.phase = .closed; continuation.resume() }
+        }
+    }
+
+    func isClosed() async -> Bool {
+        let state = state
+        return await withCheckedContinuation { continuation in
+            Worker.shared.queue.async {
+                let closed: Bool
+                if case .closed = state.phase { closed = true } else { closed = false }
+                continuation.resume(returning: closed)
+            }
         }
     }
 
@@ -179,7 +241,11 @@ public final class AnisetteContext: Sendable {
                     })
                 }
             }
-        } onCancel: { self.cancellation.cancel() }
+        } onCancel: {
+            self.cancellation.cancel()
+            let state = self.state
+            Worker.shared.queue.async { state.phase = .closed }
+        }
     }
 }
 
@@ -190,8 +256,9 @@ private final class Worker: @unchecked Sendable {
     private var libraries: [URL: UnicornLibrary] = [:]
 
     func library(at url: URL) throws -> UnicornLibrary {
-        let library = try libraries[url] ?? UnicornLibrary(url: url)
-        libraries[url] = library
+        let key = url.standardizedFileURL
+        let library = try libraries[key] ?? UnicornLibrary(url: key)
+        libraries[key] = library
         return library
     }
 }

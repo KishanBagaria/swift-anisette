@@ -212,6 +212,79 @@ struct AnisetteTests {
     }
 
     @Test(.enabled(if: environment["ANISETTE_APPLE_DIR"] != nil))
+    func prepareLoadsAndCachesRuntime() async throws {
+        try await AnisetteContext.prepare(configuration: Self.cachedRuntime)
+        try await AnisetteContext.prepare(configuration: Self.cachedRuntime)
+    }
+
+    @Test(.enabled(if: environment["ANISETTE_APPLE_DIR"] != nil))
+    func scopedProvisioningPropagatesChallengeAndExchangeErrors() async throws {
+        struct ExchangeFailure: Error {}
+
+        var exchangeCalled = false
+        let adiError = await #expect(throws: AnisetteError.self) {
+            try await AnisetteContext.provision(
+                identifier: UUID(),
+                challenge: Data(count: 256),
+                configuration: Self.cachedRuntime
+            ) { _ in
+                exchangeCalled = true
+                return (Data(), Data())
+            }
+        }
+        #expect(adiError?.adiStatus == -45031)
+        #expect(!exchangeCalled)
+
+        let invalidError = await #expect(throws: AnisetteError.self) {
+            try await AnisetteContext.provision(
+                identifier: UUID(),
+                challenge: Data(),
+                configuration: Self.cachedRuntime
+            ) { _ in
+                exchangeCalled = true
+                return (Data(), Data())
+            }
+        }
+        #expect(invalidError != nil && invalidError?.adiStatus == nil)
+        #expect(!exchangeCalled)
+
+        var escaped: AnisetteContext?
+        var receivedChallenge: Data?
+        await #expect(throws: ExchangeFailure.self) {
+            try await AnisetteContext.provision(
+                identifier: UUID(),
+                configuration: Self.cachedRuntime,
+                start: { context in
+                    escaped = context
+                    return AnisetteContext.ProvisioningSession(clientChallenge: Data("cpim".utf8), context: context)
+                },
+                exchange: { clientChallenge in
+                    receivedChallenge = clientChallenge
+                    throw ExchangeFailure()
+                }
+            )
+        }
+        #expect(receivedChallenge == Data("cpim".utf8))
+        let context = try #require(escaped)
+        #expect(await context.isClosed())
+        await #expect(throws: CancellationError.self) { try await context.requestOTP() }
+    }
+
+    @Test(.enabled(if: environment["ANISETTE_APPLE_DIR"] != nil))
+    func cancellingTaskClosesContext() async throws {
+        let context = try await AnisetteContext.open(identifier: UUID(), configuration: Self.cachedRuntime)
+        #expect(await !context.isClosed())
+        let task = Task {
+            await Task.yield()
+            return try await context.requestOTP()
+        }
+        task.cancel()
+        await #expect(throws: CancellationError.self) { try await task.value }
+        #expect(await context.isClosed())
+        await #expect(throws: CancellationError.self) { try await context.requestOTP() }
+    }
+
+    @Test(.enabled(if: environment["ANISETTE_APPLE_DIR"] != nil))
     func profileEntriesLieInTheirImages() throws {
         let profile = try Profile.load(assets: ProfileGeneration.localAssets())
         let expected = try PinnedBuild.current().preparedImageHashes

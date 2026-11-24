@@ -2,13 +2,17 @@ import Foundation
 import CAnisette
 
 /// Every failure the library reports itself. Task cancellation surfaces as `CancellationError`.
-public struct AnisetteError: Error, CustomStringConvertible, Sendable {
+public struct AnisetteError: Error, LocalizedError, CustomStringConvertible, Equatable, Hashable, Sendable {
     /// ADI's "not provisioned" status: provision the identity, then retry.
     public static let notProvisionedStatus: Int32 = -45061
 
+    /// A human-readable description of the failure.
     public let description: String
     /// The status Apple's ADI returned, when the failure came from ADI itself.
     public let adiStatus: Int32?
+
+    /// A localized message describing the failure, matching `description`.
+    public var errorDescription: String? { description }
 
     init(_ description: String, adiStatus: Int32? = nil) {
         self.description = description

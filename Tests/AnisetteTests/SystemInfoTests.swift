@@ -56,5 +56,45 @@ struct SystemInfoTests {
         #expect(summer["X-Apple-Locale"] == "de_DE")
         #expect(summer["X-Apple-I-Client-Time"] == "2023-07-22T04:26:40Z")
     }
+
+    @Test func deviceHeadersAndDefaultOTPHeaders() throws {
+        let system = AnisetteSystemInfo(productVersion: "30.2.1", buildVersion: "29C123", darwinVersion: "30.2.0",
+                                        cfNetworkVersion: "4000.2.3.4", authKitVersion: "2", akdVersion: "3.0")
+        let identifier = try #require(UUID(uuidString: "00010203-0405-0607-0809-0A0B0C0D0E0F"))
+        let timeZone = try #require(TimeZone(identifier: "America/Los_Angeles"))
+        let date = Date(timeIntervalSince1970: 1_700_000_000.75)
+        let abbreviation = try #require(timeZone.abbreviation(for: date))
+        let device = system.deviceHeaders(identifier: identifier, date: date, timeZone: timeZone,
+                                          locale: Locale(identifier: "en_US"))
+        #expect(device == [
+            "X-Apple-I-MD-LU": "be45cb2605bf36bebde684841a28f0fd43c69850a3dce5fedba69928ee3a8991",
+            "X-Mme-Device-Id": "00010203-0405-0607-0809-0a0b0c0d0e0f",
+            "X-MMe-Client-Info": system.clientInfo,
+            "X-Apple-I-SRL-NO": "0",
+            "X-Apple-I-Client-Time": "2023-11-14T22:13:20Z",
+            "X-Apple-I-TimeZone": abbreviation,
+            "X-Apple-Locale": "en_US",
+        ])
+
+        let defaultDevice = system.deviceHeaders(identifier: identifier)
+        #expect(defaultDevice["X-Mme-Device-Id"] == "00010203-0405-0607-0809-0a0b0c0d0e0f")
+        #expect(defaultDevice["X-MMe-Client-Info"] == system.clientInfo)
+        #expect(defaultDevice["X-Apple-Locale"] == Locale.current.identifier)
+
+        let otp = AnisetteContext.OTP(machineID: Data("mid".utf8), password: Data("otp".utf8), provisioningState: Data([1, 2]))
+        let defaultHeaders = otp.headers(identifier: identifier, routingInfo: 17106176, system: system)
+        #expect(defaultHeaders["X-Apple-I-MD"] == "b3Rw")
+        #expect(defaultHeaders["X-Apple-I-MD-M"] == "bWlk")
+        #expect(defaultHeaders["X-Apple-I-MD-RINFO"] == "17106176")
+        #expect(defaultHeaders["X-Apple-I-MD-LU"] == "be45cb2605bf36bebde684841a28f0fd43c69850a3dce5fedba69928ee3a8991")
+        #expect(defaultHeaders["X-MMe-Client-Info"] == system.clientInfo)
+        #expect(defaultHeaders["X-Apple-Locale"] == Locale.current.identifier)
+    }
+
+    @Test func anisetteErrorLocalizedDescriptionMatchesDescription() {
+        let error = AnisetteError("Apple ADI returned error -45061", adiStatus: AnisetteError.notProvisionedStatus)
+        #expect(error.errorDescription == error.description)
+        #expect((error as any Error).localizedDescription == error.description)
+    }
 }
 #endif
