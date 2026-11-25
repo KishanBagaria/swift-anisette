@@ -1,5 +1,5 @@
 {
-  "originHash" : "2641e7d1229b00d1bab23a58b42a6d6c0c2556c13e7925a00fdfbddc90924455",
+  "originHash" : "54fc2c0f89a1b28829261628edc460904b055029bdd074942c2bf81733e2824a",
   "pins" : [
     {
       "identity" : "libzbitmap",
@@ -24,8 +24,7 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/p-x9/MachOKit",
       "state" : {
-        "revision" : "7513ef032ce3c99bedfcfa3a4a35f985dc80a154",
-        "version" : "0.56.2"
+        "revision" : "e9896200470897df1c34b2bfc9f181fa8421bed9"
       }
     },
     {

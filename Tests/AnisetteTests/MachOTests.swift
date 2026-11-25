@@ -140,7 +140,7 @@ struct MachOTests {
         #expect(throws: (any Error).self) { try MachO(bytes).symbols() }
     }
 
-    @Test func malformedExportNodesFailBeforeLibraryPointerReads() throws {
+    @Test func malformedExportNodesAreRejected() throws {
         for bytes: [UInt8] in [
             [0x80], [6, 0x80, 0x80, 0x80, 0x80, 8, 0, 0],
             [3, 8, 0, 0x61, 0], [2, 16, 1, 0], [0, 1, 0x61], [0, 1, 0x61, 0, 0x80],
