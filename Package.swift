@@ -17,7 +17,11 @@ let package = Package(
         .target(
             name: "CAnisette",
             dependencies: [.product(name: "LZFSE", package: "lzfse-swift")],
-            linkerSettings: [.linkedLibrary("z"), .linkedLibrary("dl", .when(platforms: [.linux]))]
+            linkerSettings: [
+                .linkedLibrary("z"),
+                .linkedLibrary("dl", .when(platforms: [.linux])),
+                .linkedLibrary("rt", .when(platforms: [.linux])),
+            ]
         ),
         .target(
             name: "Anisette",

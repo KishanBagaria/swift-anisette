@@ -90,7 +90,7 @@ enum ARM64 {
 }
 
 /// Architectural registers a vCPU backend exposes to `ARM64Engine`.
-enum ARM64Register {
+enum ARM64Register: Hashable, Sendable {
     case x(Int)
     case spEL0, spEL1, pc, cpsr, fpcr, fpsr
     case elrEL1, spsrEL1, esrEL1, farEL1

@@ -90,7 +90,7 @@ final class ARM64Engine<VCPU: ARM64VCPU>: GuestEngine {
     let id: UInt64
     let asid: UInt8
     let ttbr0: UInt64
-    var emulatesUnsupportedInstructions: Bool { false }
+    var emulatesUnsupportedInstructions: Bool { lastFaultWasUndefinedInstruction }
     var needsTLBFlush = false
 
     private var registers = RegisterSnapshot()
@@ -100,6 +100,7 @@ final class ARM64Engine<VCPU: ARM64VCPU>: GuestEngine {
     private let stopLock = NSLock()
     private var stopped = false
     private var hasExecuted = false
+    private var lastFaultWasUndefinedInstruction = false
 
     init(runtime: VCPU, cancellation: Cancellation) throws {
         self.runtime = runtime
@@ -240,6 +241,7 @@ final class ARM64Engine<VCPU: ARM64VCPU>: GuestEngine {
     }
 
     func start(_ begin: UInt64, until end: UInt64, timeout: UInt64) throws {
+        lastFaultWasUndefinedInstruction = false
         try cancellation.check()
         try runtime.performSync {
             setStopped(false)
@@ -287,7 +289,12 @@ final class ARM64Engine<VCPU: ARM64VCPU>: GuestEngine {
             let elr = try runtime.read(.elrEL1)
             let esr = try runtime.read(.esrEL1)
             let far = try runtime.read(.farEL1)
+            let spsr = try runtime.read(.spsrEL1)
+            lastFaultWasUndefinedInstruction = ((esr >> 26) & 0x3f) == 0
             try runtime.write(.pc, elr)
+            if lastFaultWasUndefinedInstruction {
+                try runtime.write(.cpsr, spsr)
+            }
             throw AnisetteError(
                 "Guest exception ELR=0x\(String(elr, radix: 16)) ESR=0x\(String(esr, radix: 16)) FAR=0x\(String(far, radix: 16))"
             )

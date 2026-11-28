@@ -320,31 +320,27 @@ final class HypervisorRuntime: ARM64VCPU, @unchecked Sendable {
         }
     }
 
-    private enum Location {
+    private enum Location: Sendable {
         case core(hv_reg_t)
         case system(hv_sys_reg_t)
     }
 
+    private static let registerLocations: [ARM64Register: Location] = [
+        .pc: .core(HV_REG_PC), .cpsr: .core(HV_REG_CPSR), .fpcr: .core(HV_REG_FPCR), .fpsr: .core(HV_REG_FPSR),
+        .spEL0: .system(HV_SYS_REG_SP_EL0), .spEL1: .system(HV_SYS_REG_SP_EL1),
+        .elrEL1: .system(HV_SYS_REG_ELR_EL1), .spsrEL1: .system(HV_SYS_REG_SPSR_EL1),
+        .esrEL1: .system(HV_SYS_REG_ESR_EL1), .farEL1: .system(HV_SYS_REG_FAR_EL1),
+        .tpidrEL0: .system(HV_SYS_REG_TPIDR_EL0), .tpidrROEL0: .system(HV_SYS_REG_TPIDRRO_EL0),
+        .tpidrEL1: .system(HV_SYS_REG_TPIDR_EL1), .contextidrEL1: .system(HV_SYS_REG_CONTEXTIDR_EL1),
+        .ttbr0EL1: .system(HV_SYS_REG_TTBR0_EL1), .vbarEL1: .system(HV_SYS_REG_VBAR_EL1),
+    ]
+
     private static func location(of reg: ARM64Register) -> Location {
-        switch reg {
-        case .x(let index): .core(hv_reg_t(UInt32(index)))
-        case .pc: .core(HV_REG_PC)
-        case .cpsr: .core(HV_REG_CPSR)
-        case .fpcr: .core(HV_REG_FPCR)
-        case .fpsr: .core(HV_REG_FPSR)
-        case .spEL0: .system(HV_SYS_REG_SP_EL0)
-        case .spEL1: .system(HV_SYS_REG_SP_EL1)
-        case .elrEL1: .system(HV_SYS_REG_ELR_EL1)
-        case .spsrEL1: .system(HV_SYS_REG_SPSR_EL1)
-        case .esrEL1: .system(HV_SYS_REG_ESR_EL1)
-        case .farEL1: .system(HV_SYS_REG_FAR_EL1)
-        case .tpidrEL0: .system(HV_SYS_REG_TPIDR_EL0)
-        case .tpidrROEL0: .system(HV_SYS_REG_TPIDRRO_EL0)
-        case .tpidrEL1: .system(HV_SYS_REG_TPIDR_EL1)
-        case .contextidrEL1: .system(HV_SYS_REG_CONTEXTIDR_EL1)
-        case .ttbr0EL1: .system(HV_SYS_REG_TTBR0_EL1)
-        case .vbarEL1: .system(HV_SYS_REG_VBAR_EL1)
+        if case .x(let index) = reg { return .core(hv_reg_t(UInt32(index))) }
+        guard let mapped = registerLocations[reg] else {
+            preconditionFailure("Unmapped ARM64Register \(reg)")
         }
+        return mapped
     }
 
     func read(_ reg: ARM64Register) throws -> UInt64 {

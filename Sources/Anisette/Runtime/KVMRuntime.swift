@@ -312,26 +312,23 @@ final class KVMRuntime: ARM64VCPU, @unchecked Sendable {
         }
     }
 
+    private static let registerMap: [ARM64Register: anisette_kvm_reg] = [
+        .spEL0: ANISETTE_KVM_REG_SP_EL0, .spEL1: ANISETTE_KVM_REG_SP_EL1,
+        .pc: ANISETTE_KVM_REG_PC, .cpsr: ANISETTE_KVM_REG_PSTATE,
+        .fpcr: ANISETTE_KVM_REG_FPCR, .fpsr: ANISETTE_KVM_REG_FPSR,
+        .elrEL1: ANISETTE_KVM_REG_ELR_EL1, .spsrEL1: ANISETTE_KVM_REG_SPSR_EL1,
+        .esrEL1: ANISETTE_KVM_REG_ESR_EL1, .farEL1: ANISETTE_KVM_REG_FAR_EL1,
+        .tpidrEL0: ANISETTE_KVM_REG_TPIDR_EL0, .tpidrROEL0: ANISETTE_KVM_REG_TPIDRRO_EL0,
+        .tpidrEL1: ANISETTE_KVM_REG_TPIDR_EL1, .contextidrEL1: ANISETTE_KVM_REG_CONTEXTIDR_EL1,
+        .ttbr0EL1: ANISETTE_KVM_REG_TTBR0_EL1, .vbarEL1: ANISETTE_KVM_REG_VBAR_EL1,
+    ]
+
     private static func kvmRegister(_ reg: ARM64Register) -> anisette_kvm_reg {
-        switch reg {
-        case .x(let index): anisette_kvm_reg(ANISETTE_KVM_REG_X0.rawValue + UInt32(index))
-        case .spEL0: ANISETTE_KVM_REG_SP_EL0
-        case .spEL1: ANISETTE_KVM_REG_SP_EL1
-        case .pc: ANISETTE_KVM_REG_PC
-        case .cpsr: ANISETTE_KVM_REG_PSTATE
-        case .fpcr: ANISETTE_KVM_REG_FPCR
-        case .fpsr: ANISETTE_KVM_REG_FPSR
-        case .elrEL1: ANISETTE_KVM_REG_ELR_EL1
-        case .spsrEL1: ANISETTE_KVM_REG_SPSR_EL1
-        case .esrEL1: ANISETTE_KVM_REG_ESR_EL1
-        case .farEL1: ANISETTE_KVM_REG_FAR_EL1
-        case .tpidrEL0: ANISETTE_KVM_REG_TPIDR_EL0
-        case .tpidrROEL0: ANISETTE_KVM_REG_TPIDRRO_EL0
-        case .tpidrEL1: ANISETTE_KVM_REG_TPIDR_EL1
-        case .contextidrEL1: ANISETTE_KVM_REG_CONTEXTIDR_EL1
-        case .ttbr0EL1: ANISETTE_KVM_REG_TTBR0_EL1
-        case .vbarEL1: ANISETTE_KVM_REG_VBAR_EL1
+        if case .x(let index) = reg { return anisette_kvm_reg(ANISETTE_KVM_REG_X0.rawValue + UInt32(index)) }
+        guard let mapped = registerMap[reg] else {
+            preconditionFailure("Unmapped ARM64Register \(reg)")
         }
+        return mapped
     }
 
     private func setReg(_ reg: anisette_kvm_reg, _ value: UInt64) throws {

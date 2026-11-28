@@ -28,7 +28,11 @@
 #endif
 
 #ifndef sigev_notify_thread_id
+#ifdef __GLIBC__
 #define sigev_notify_thread_id _sigev_un._tid
+#else
+#define sigev_notify_thread_id __sev_fields.__tid
+#endif
 #endif
 
 #define CORE_REG(size, field) (KVM_REG_ARM64 | (size) | KVM_REG_ARM_CORE | KVM_REG_ARM_CORE_REG(field))
@@ -60,7 +64,12 @@ static void set_error(char *buf, size_t size, int err, const char *step) {
 }
 
 int anisette_kvm_setup_worker_thread(int *kick_signal_out) {
-    int sig = SIGRTMIN + 1;
+    int sig = SIGUSR1;
+#ifdef SIGRTMIN
+    if (SIGRTMIN + 1 <= SIGRTMAX && SIGRTMIN + 1 <= 64) {
+        sig = SIGRTMIN + 1;
+    }
+#endif
 
     struct sigaction sa;
     memset(&sa, 0, sizeof(sa));

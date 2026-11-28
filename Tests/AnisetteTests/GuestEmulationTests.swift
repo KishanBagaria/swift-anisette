@@ -248,6 +248,139 @@ struct GuestEmulationTests {
     }
 
     @Test(.enabled(if: hasAnyBackend), arguments: availableBackends)
+    func emulateARM64eAuthenticatedLoadsAndRCpc(backend: AnisetteConfiguration.Backend) async throws {
+        let machine = try await Self.syntheticMachine(backend: backend)
+        let codeAddress: UInt64 = 0x200000000
+        let dataAddress: UInt64 = 0x200001000
+        try machine.engine.map(codeAddress, 4096)
+        try machine.engine.map(dataAddress, 4096)
+
+        func step(_ instruction: UInt32) throws {
+            try machine.engine.write(codeAddress, instruction)
+            try machine.engine.register(.pc, codeAddress)
+            #expect(try machine.emulateUnsupportedInstruction())
+            #expect(try machine.engine.register(.pc) == codeAddress + 4)
+        }
+
+        // LDRAA / LDRAB: zero, positive, negative, and pre-indexed writeback (including SP).
+        try machine.engine.write(dataAddress + 0x20, UInt64(0x1111_2222_3333_4444))
+        try machine.engine.write(dataAddress + 0x30, UInt64(0x5555_6666_7777_8888))
+        try machine.engine.write(dataAddress + 0x10, UInt64(0x9999_aaaa_bbbb_cccc))
+        try machine.engine.write(dataAddress + 0x38, UInt64(0xdddd_eeee_ffff_0001))
+        try machine.engine.register(.x(1), dataAddress + 0x20)
+        try step(0xf8200420) // ldraa x0, [x1]
+        #expect(try machine.engine.register(.x0) == 0x1111_2222_3333_4444)
+        try step(0xf8202420) // ldraa x0, [x1, #0x10]
+        #expect(try machine.engine.register(.x0) == 0x5555_6666_7777_8888)
+        try step(0xf87fe420) // ldraa x0, [x1, #-0x10]
+        #expect(try machine.engine.register(.x0) == 0x9999_aaaa_bbbb_cccc)
+        try step(0xf8203c20) // ldraa x0, [x1, #0x18]!
+        #expect(try machine.engine.register(.x0) == 0xdddd_eeee_ffff_0001)
+        #expect(try machine.engine.register(.x(1)) == dataAddress + 0x38)
+        try machine.engine.register(.sp, dataAddress + 0x28)
+        try step(0xf8ffffe0) // ldrab x0, [sp, #-0x8]!
+        #expect(try machine.engine.register(.x0) == 0x1111_2222_3333_4444)
+        #expect(try machine.engine.register(.sp) == dataAddress + 0x20)
+
+        // LDAPRB / LDAPRH / LDAPR (32-bit and 64-bit, including SP).
+        try machine.engine.write(dataAddress, UInt64(0x0102_0304_0506_0708))
+        try machine.engine.register(.x(1), dataAddress)
+        try step(0x38bfc020) // ldaprb w0, [x1]
+        #expect(try machine.engine.register(.x0) == 0x08)
+        try step(0x78bfc020) // ldaprh w0, [x1]
+        #expect(try machine.engine.register(.x0) == 0x0708)
+        try step(0xb8bfc020) // ldapr w0, [x1]
+        #expect(try machine.engine.register(.x0) == 0x0506_0708)
+        try step(0xf8bfc020) // ldapr x0, [x1]
+        #expect(try machine.engine.register(.x0) == 0x0102_0304_0506_0708)
+        try machine.engine.register(.sp, dataAddress)
+        try step(0xf8bfc3e0) // ldapr x0, [sp]
+        #expect(try machine.engine.register(.x0) == 0x0102_0304_0506_0708)
+    }
+
+    @Test(.enabled(if: hasAnyBackend), arguments: availableBackends)
+    func emulateExtendedLSEAndSHA3(backend: AnisetteConfiguration.Backend) async throws {
+        let machine = try await Self.syntheticMachine(backend: backend)
+        let codeAddress: UInt64 = 0x200000000
+        let dataAddress: UInt64 = 0x200001000
+        try machine.engine.map(codeAddress, 4096)
+        try machine.engine.map(dataAddress, 4096)
+
+        func step(_ instruction: UInt32) throws {
+            try machine.engine.write(codeAddress, instruction)
+            try machine.engine.register(.pc, codeAddress)
+            #expect(try machine.emulateUnsupportedInstruction())
+            #expect(try machine.engine.register(.pc) == codeAddress + 4)
+        }
+
+        // Extended LSE atomics: LDADD/LDCLR/LDEOR/LDSET/STADD, byte/halfword CAS/SWP.
+        try machine.engine.write(dataAddress, UInt64(0x10))
+        try machine.engine.register(.x(2), dataAddress)
+        try machine.engine.register(.x0, 5)
+        try step(0xf8e00041) // ldaddal x0, x1, [x2]
+        #expect(try machine.engine.register(.x(1)) == 0x10)
+        #expect(try machine.engine.read(dataAddress, as: UInt64.self) == 0x15)
+        try machine.engine.register(.x0, 0x05)
+        try step(0xb8201041) // ldclr w0, w1, [x2]
+        #expect(try machine.engine.register(.x(1)) == 0x15)
+        #expect(try machine.engine.read(dataAddress, as: UInt32.self) == 0x10)
+        try machine.engine.register(.x0, 0x03)
+        try step(0xb8203041) // ldset w0, w1, [x2]
+        #expect(try machine.engine.read(dataAddress, as: UInt32.self) == 0x13)
+        try machine.engine.register(.x0, 0x0f)
+        try step(0xf8202041) // ldeor x0, x1, [x2]
+        #expect(try machine.engine.read(dataAddress, as: UInt64.self) == 0x1c)
+        try machine.engine.register(.x0, 4)
+        try step(0xf820005f) // stadd x0, [x2]
+        #expect(try machine.engine.read(dataAddress, as: UInt64.self) == 0x20)
+
+        try machine.engine.write(dataAddress, UInt16(0x1234))
+        try machine.engine.register(.x0, 0x34)
+        try machine.engine.register(.x(1), 0x78)
+        try step(0x08a07c41) // casb w0, w1, [x2]
+        #expect(try machine.engine.read(dataAddress, as: UInt16.self) == 0x1278)
+        try machine.engine.register(.x0, 0x1278)
+        try machine.engine.register(.x(1), 0x569a)
+        try step(0x48a07c41) // cash w0, w1, [x2]
+        #expect(try machine.engine.read(dataAddress, as: UInt16.self) == 0x569a)
+        try machine.engine.register(.x0, 0x99)
+        try step(0x38208041) // swpb w0, w1, [x2]
+        #expect(try machine.engine.register(.x(1)) == 0x9a)
+        #expect(try machine.engine.read(dataAddress, as: UInt16.self) == 0x5699)
+        try machine.engine.register(.x0, 0xabcd)
+        try step(0x78208041) // swph w0, w1, [x2]
+        #expect(try machine.engine.register(.x(1)) == 0x5699)
+        #expect(try machine.engine.read(dataAddress, as: UInt16.self) == 0xabcd)
+
+        // Signed/unsigned min/max LSE atomics (negative -1 vs +1 in 32-bit).
+        try machine.engine.write(dataAddress, UInt32(0xffff_ffff)) // -1 signed, 0xffffffff unsigned
+        try machine.engine.register(.x0, 1)
+        try step(0xb8204041) // ldsmax w0, w1, [x2] -> max(-1, 1) = 1
+        #expect(try machine.engine.register(.x(1)) == 0xffff_ffff)
+        #expect(try machine.engine.read(dataAddress, as: UInt32.self) == 1)
+        try machine.engine.register(.x0, 0xffff_fffe) // -2 signed
+        try step(0xb8205041) // ldsmin w0, w1, [x2] -> min(1, -2) = -2
+        #expect(try machine.engine.register(.x(1)) == 1)
+        #expect(try machine.engine.read(dataAddress, as: UInt32.self) == 0xffff_fffe)
+        try machine.engine.register(.x0, 5)
+        try step(0xb8206041) // ldumax w0, w1, [x2] -> max(0xfffffffe, 5) = 0xfffffffe
+        #expect(try machine.engine.read(dataAddress, as: UInt32.self) == 0xffff_fffe)
+        try step(0xb8207041) // ldumin w0, w1, [x2] -> min(0xfffffffe, 5) = 5
+        #expect(try machine.engine.read(dataAddress, as: UInt32.self) == 5)
+
+        // BCAX V0.16B, V1.16B, V2.16B, V3.16B (0xce220c20): V0 = V1 ^ (V2 & ~V3).
+        let v1 = Data((0..<16).map { UInt8($0 &* 5) })
+        let v2 = Data((0..<16).map { UInt8(0xf0 ^ $0) })
+        let v3 = Data((0..<16).map { UInt8(0xaa ^ ($0 &* 3)) })
+        let expected = Data((0..<16).map { v1[$0] ^ (v2[$0] & ~v3[$0]) })
+        try machine.engine.vector(1, v1)
+        try machine.engine.vector(2, v2)
+        try machine.engine.vector(3, v3)
+        try step(0xce220c20)
+        #expect(try machine.engine.vector(0) == expected)
+    }
+
+    @Test(.enabled(if: hasAnyBackend), arguments: availableBackends)
     func platformAndFilesTruncate32BitArgumentsAndHandleEdgeCases(backend: AnisetteConfiguration.Backend) async throws {
         let machine = try await Self.syntheticMachine(backend: backend)
         let services = machine.services

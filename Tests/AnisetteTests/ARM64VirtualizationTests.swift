@@ -224,6 +224,16 @@ struct ARM64VirtualizationTests {
         #expect(message.contains("ESR=0x"))
         #expect(message.contains("FAR=0xdeadbeef00"))
         #expect(try machine.engine.register(.pc) == faultVA)
+        #expect(!machine.engine.emulatesUnsupportedInstructions)
+
+        // Undefined instruction (UDF #0) sets emulatesUnsupportedInstructions and reports ELR/ESR.
+        let undefVA = highDataPage + 0x240
+        try machine.engine.write(undefVA, UInt32(0x0000_0000)) // udf #0
+        let undefError = #expect(throws: AnisetteError.self) {
+            _ = try machine.invoke(undefVA)
+        }
+        #expect(undefError?.description.contains("ELR=0x\(String(undefVA, radix: 16))") == true)
+        #expect(machine.engine.emulatesUnsupportedInstructions)
     }
 
     @Test(.enabled(if: hasNativeBackend))
