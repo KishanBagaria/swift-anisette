@@ -310,8 +310,8 @@ struct AnisetteTests {
     @Test(.enabled(if: environment["ANISETTE_APPLE_DIR"] != nil))
     func serviceAliasesNameImplementedHandlers() async throws {
         let resources = try await Resources.load(configuration: Self.cachedRuntime)
-        let machine = try GuestMachine(name: "commerce", profile: resources.profile,
-                                       library: UnicornLibrary(url: resources.library), cancellation: Cancellation())
+        let engine = try resources.engine.factory(cancellation: Cancellation())()
+        let machine = try GuestMachine(name: "commerce", profile: resources.profile, engine: engine)
         func unsupported(_ handler: String) -> Bool {
             do { try machine.services.dispatch(handler) } catch {
                 return "\(error)".hasPrefix("Guest called unsupported import")

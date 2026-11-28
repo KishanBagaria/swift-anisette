@@ -1,6 +1,6 @@
 # swift-anisette
 
-Local anisette generation in Swift for macOS and Linux. Runs Apple's ADI implementation in Unicorn. The caller handles provisioning HTTP requests and stores the resulting state; Apple ID credentials stay with the caller.
+Local anisette generation in Swift for macOS and Linux. Runs Apple's ADI implementation using `Hypervisor.framework` on entitled Apple Silicon Macs, falling back to Unicorn elsewhere. The caller handles provisioning HTTP requests and stores the resulting state; Apple ID credentials stay with the caller.
 
 Requires Swift 6.2 or later. iOS is not supported.
 
@@ -12,7 +12,7 @@ Requires Swift 6.2 or later. iOS is not supported.
 
 Add `.product(name: "Anisette", package: "swift-anisette")` to your target's dependencies.
 
-Linux needs zlib development headers (`zlib1g-dev` on Ubuntu). Hardened macOS apps need `com.apple.security.cs.allow-unsigned-executable-memory` and `com.apple.security.cs.disable-library-validation`.
+Linux needs zlib development headers (`zlib1g-dev` on Ubuntu). Apple Silicon macOS apps with `com.apple.security.hypervisor` use `Hypervisor.framework` by default and avoid downloading Unicorn; without it (e.g., unsigned CLI runs or non-nested CI VMs) and on Intel Macs, the library falls back to Unicorn, which on hardened macOS apps requires `com.apple.security.cs.allow-unsigned-executable-memory` and `com.apple.security.cs.disable-library-validation`.
 
 ## Example
 
@@ -68,9 +68,9 @@ Keep each identity's UUID stable and serialize its entire read → generate → 
 
 ## Runtime
 
-First use downloads Unicorn and extracts the required files from Apple's public restore image. This fetches about 215 MB in ranged requests, takes a few minutes, and keeps about 90 MB. Downloads are verified and cached in the user's cache directory under `swift-anisette`. Call `AnisetteContext.prepare(configuration:)` at startup to pre-warm and verify the runtime without opening a context. Nothing is logged meanwhile; wrap `AnisetteHTTPClient.live` in your own `httpClient` to report progress, as the example does.
+First use extracts the required files from Apple's public restore image (and downloads Unicorn when Unicorn is used). This fetches about 215 MB in ranged requests, takes a few minutes, and keeps about 90 MB. Downloads are verified and cached in the user's cache directory under `swift-anisette`. Call `AnisetteContext.prepare(configuration:)` at startup to pre-warm and verify the runtime without opening a context. Nothing is logged meanwhile; wrap `AnisetteHTTPClient.live` in your own `httpClient` to report progress, as the example does.
 
-Pass an `AnisetteConfiguration` to `prepare`, `open`, `with`, or `provision` for a custom cache (`cacheDirectory`), offline assets (`appleDirectory`, `unicornLibrary`), or your own downloader (`httpClient`):
+Pass an `AnisetteConfiguration` to `prepare`, `open`, `with`, or `provision` for a custom cache (`cacheDirectory`), offline assets (`appleDirectory`, `unicornLibrary`), execution `backend` (`.automatic`, `.hypervisor`, or `.unicorn`), or your own downloader (`httpClient`). `unicornLibrary` is only used when running on Unicorn.
 
 ```swift
 let configuration = AnisetteConfiguration(cacheDirectory: appSupport.appendingPathComponent("anisette"))
@@ -83,12 +83,13 @@ The library throws `AnisetteError` (conforming to `LocalizedError`), or `Cancell
 
 ## Development
 
-Run `swift test` and `make lint`. Network and cached-runtime checks are opt-in. `ANISETTE_APPLE_DIR` names a directory of verified Apple assets; the installer test fills it when set, and also caches Unicorn. `ANISETTE_UNICORN_LIBRARY` optionally points at libunicorn instead. The cached-runtime tests never fetch Apple assets; their only permitted download is the pinned Unicorn wheel, when no library is named or cached.
+Run `swift test`, `make test-hypervisor` (ad-hoc signs the test runner with `com.apple.security.hypervisor`), and `make lint`. Network and cached-runtime checks are opt-in. `ANISETTE_APPLE_DIR` names a directory of verified Apple assets; the installer test fills it when set, and also caches Unicorn when needed. `ANISETTE_UNICORN_LIBRARY` optionally points at libunicorn instead. The cached-runtime tests never fetch Apple assets; their only permitted download is the pinned Unicorn wheel, when Unicorn is used and no library is named or cached.
 
 ```sh
 export ANISETTE_APPLE_DIR=~/Library/Caches/swift-anisette/test-assets
 ANISETTE_TEST_ASSETS=1 swift test --filter nativeAssetInstallation
 swift test --filter AnisetteTests
+make test-hypervisor
 ANISETTE_TEST_UNICORN=1 swift test --filter nativeUnicornArchiveDownload
 ```
 
@@ -96,4 +97,4 @@ ANISETTE_TEST_UNICORN=1 swift test --filter nativeUnicornArchiveDownload
 
 ## License
 
-[MIT](LICENSE.md). Third-party licenses and attributions are bundled in [Resources](Sources/Anisette/Resources). The downloaded Unicorn runtime is GPLv2; Apple assets retain Apple's terms.
+[MIT](LICENSE.md). Third-party licenses and attributions are bundled in [Resources](Sources/Anisette/Resources). When Unicorn is used, the downloaded Unicorn runtime is GPLv2; Apple assets retain Apple's terms.

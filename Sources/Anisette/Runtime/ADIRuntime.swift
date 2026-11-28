@@ -1,6 +1,6 @@
 import Foundation
 
-/// Apple code executes only inside four isolated Unicorn machines. This object
+/// Apple code executes only inside four isolated guest machines. This object
 /// and every guest callback are confined to the library's serial worker queue.
 final class ADIRuntime {
     static let statePath = "/var/db/fpsd/adi/adi.pb"
@@ -12,12 +12,11 @@ final class ADIRuntime {
     private var kernelContext: UInt64 = 0
     private var daemonHandler: UInt64 = 0
 
-    init(identifier: Data, state: Data, profile: Profile, library: UnicornLibrary, cancellation: Cancellation) throws {
+    init(identifier: Data, state: Data, profile: Profile, makeEngine: () throws -> any GuestEngine) throws {
         try require(identifier.count == 16, "ADI identifier must contain 16 bytes")
         entries = profile.entries
         func machine(_ name: String, pauseRunLoop: Bool = false) throws -> GuestMachine {
-            try GuestMachine(name: name, profile: profile, library: library, cancellation: cancellation,
-                             pauseRunLoop: pauseRunLoop)
+            try GuestMachine(name: name, profile: profile, engine: try makeEngine(), pauseRunLoop: pauseRunLoop)
         }
         client = try machine("commerce")
         daemon = try machine("adid", pauseRunLoop: true)

@@ -1,16 +1,30 @@
 import Foundation
 
-/// Configuration for the verified data and native Unicorn library used by Anisette.
-/// Set either URL to use an offline installation rather than the default cache.
+/// Configuration for the verified Apple data and guest execution backend used by Anisette.
+/// Set `appleDirectory` or `unicornLibrary` to use an offline installation rather than the default cache.
 public struct AnisetteConfiguration: Sendable {
+    /// Guest execution backend used to run Apple's ARM64 code.
+    public enum Backend: String, Sendable, Equatable, Hashable, CaseIterable {
+        /// Uses Apple's `Hypervisor.framework` on Apple Silicon macOS when available and entitled,
+        /// falling back to Unicorn otherwise (including unentitled processes, Intel Macs, and Linux).
+        case automatic
+        /// Requires Apple's `Hypervisor.framework` (Apple Silicon macOS with `com.apple.security.hypervisor`).
+        case hypervisor
+        /// Always runs in Unicorn (`unicornLibrary` if set, otherwise the pinned cached wheel).
+        case unicorn
+    }
+
     /// Directory containing verified Apple assets for offline use; when `nil`, assets are cached in `cacheDirectory`.
     public var appleDirectory: URL?
-    /// Path to a preinstalled `libunicorn` shared library; when `nil`, the pinned wheel is cached in `cacheDirectory`.
+    /// Path to a preinstalled `libunicorn` shared library used when running on Unicorn; when `nil`, the pinned wheel
+    /// is cached in `cacheDirectory`. Ignored when `Hypervisor.framework` is active.
     public var unicornLibrary: URL?
-    /// Directory used to cache downloaded Apple assets and the Unicorn runtime.
+    /// Directory used to cache downloaded Apple assets and, when Unicorn is used, the Unicorn runtime.
     public var cacheDirectory: URL
     /// Performs the first-use downloads. Everything it returns is verified against pinned hashes.
     public var httpClient: AnisetteHTTPClient
+    /// Guest execution backend selection. Defaults to `.automatic`.
+    public var backend: Backend
 
     /// Download cache; Linux honors an absolute `XDG_CACHE_HOME`.
     public static var defaultCacheDirectory: URL {
@@ -24,21 +38,23 @@ public struct AnisetteConfiguration: Sendable {
         return root.appendingPathComponent("swift-anisette")
     }
 
-    /// Creates a configuration for locating or downloading Apple assets and the Unicorn library.
+    /// Creates a configuration for locating or downloading Apple assets and selecting the execution backend.
     public init(
         appleDirectory: URL? = nil,
         unicornLibrary: URL? = nil,
         cacheDirectory: URL = Self.defaultCacheDirectory,
-        httpClient: AnisetteHTTPClient = .live
+        httpClient: AnisetteHTTPClient = .live,
+        backend: Backend = .automatic
     ) {
         self.appleDirectory = appleDirectory
         self.unicornLibrary = unicornLibrary
         self.cacheDirectory = cacheDirectory
         self.httpClient = httpClient
+        self.backend = backend
     }
 }
 
-/// A local virtual Mac identity. Apple code runs inside Unicorn; host files,
+/// A local virtual Mac identity. Apple code runs inside an isolated guest machine; host files,
 /// processes, Keychain, and credentials are never exposed to the guest.
 public final class AnisetteContext: Sendable {
     /// Finishing provisioning ends ADI's runtime, so `provisioned` is terminal like `closed`.
@@ -57,7 +73,7 @@ public final class AnisetteContext: Sendable {
         Worker.shared.queue.async { state.phase = .closed }
     }
 
-    /// Downloads, verifies, and caches the Apple assets and Unicorn runtime for `configuration`
+    /// Downloads, verifies, and caches the required runtime resources for `configuration`
     /// without opening a context.
     public static func prepare(configuration: AnisetteConfiguration = AnisetteConfiguration()) async throws {
         _ = try await Resources.load(configuration: configuration)
@@ -76,9 +92,9 @@ public final class AnisetteContext: Sendable {
         let context = AnisetteContext(cancellation: cancellation)
         let bytes = withUnsafeBytes(of: identifier.uuid) { Data($0) }
         try await context.perform {
-            let library = try Worker.shared.library(at: resources.library)
-            context.state.phase = .ready(try ADIRuntime(identifier: bytes, state: provisioningState, profile: resources.profile,
-                                                        library: library, cancellation: cancellation))
+            let makeEngine = try resources.engine.factory(cancellation: cancellation, loadLibrary: Worker.shared.library)
+            context.state.phase = .ready(try ADIRuntime(identifier: bytes, state: provisioningState,
+                                                        profile: resources.profile, makeEngine: makeEngine))
         }
         return context
     }
@@ -209,7 +225,7 @@ public final class AnisetteContext: Sendable {
         }
     }
 
-    /// Cancels any active operation and tears down the underlying Unicorn engines. Safe to call multiple times.
+    /// Cancels any active operation and tears down the underlying guest machines. Safe to call multiple times.
     public func close() async {
         cancellation.cancel()
         let state = state

@@ -13,8 +13,46 @@ struct Resources: Sendable {
     static let defaultPruneMaxAge: TimeInterval = 14 * 24 * 60 * 60
     static let defaultKeepRecent = 2
 
+    enum ExecutionBackend: Hashable, Sendable {
+        case hypervisor
+        case unicorn
+    }
+
+    /// The resolved backend, carrying the Unicorn library it runs on when applicable.
+    enum Engine: Hashable, Sendable {
+        case hypervisor
+        case unicorn(URL)
+
+        /// Loads the backend once; the returned closure creates engines that share it.
+        func factory(
+            cancellation: Cancellation,
+            loadLibrary: (URL) throws -> UnicornLibrary = { try UnicornLibrary(url: $0) }
+        ) throws -> () throws -> any GuestEngine {
+            switch self {
+            case .unicorn(let url):
+                let library = try loadLibrary(url)
+                return { try Unicorn(library: library, cancellation: cancellation) }
+            case .hypervisor:
+                #if os(macOS) && arch(arm64)
+                let runtime = try HypervisorRuntime.shared()
+                return { try HypervisorEngine(runtime: runtime, cancellation: cancellation) }
+                #else
+                throw AnisetteError("Hypervisor backend is only supported on Apple Silicon macOS")
+                #endif
+            }
+        }
+    }
+
+    static var isHypervisorAvailable: Bool {
+        #if os(macOS) && arch(arm64)
+        HypervisorRuntime.isAvailable
+        #else
+        false
+        #endif
+    }
+
     let profile: Profile
-    let library: URL
+    let engine: Engine
 
     private static let cache = Coalescer<CacheKey, Resources>()
 
@@ -75,35 +113,56 @@ struct Resources: Sendable {
         }
     }
 
-    /// Verifying the ~78 MB of assets is expensive, so do it once per configuration per process.
-    static func load(configuration: AnisetteConfiguration) async throws -> Resources {
-        let key = CacheKey(
-            appleDirectory: configuration.appleDirectory,
-            unicornLibrary: configuration.unicornLibrary,
-            cacheDirectory: configuration.cacheDirectory
-        )
-        return try await cache.load(key) {
-            try await Resources.loadUncached(configuration: configuration)
+    static func resolveBackend(_ requested: AnisetteConfiguration.Backend) throws -> ExecutionBackend {
+        switch requested {
+        case .unicorn:
+            return .unicorn
+        case .automatic:
+            return isHypervisorAvailable ? .hypervisor : .unicorn
+        case .hypervisor:
+            #if os(macOS) && arch(arm64)
+            _ = try HypervisorRuntime.shared()
+            return .hypervisor
+            #else
+            throw AnisetteError("Hypervisor backend is only supported on Apple Silicon macOS")
+            #endif
         }
     }
 
-    /// Loaded resources depend only on these locations: every byte is verified
-    /// against pinned hashes, whichever HTTP client fetched it.
+    /// Verifying the ~78 MB of assets is expensive, so do it once per configuration per process.
+    static func load(configuration: AnisetteConfiguration) async throws -> Resources {
+        let backend = try resolveBackend(configuration.backend)
+        let key = CacheKey(
+            appleDirectory: configuration.appleDirectory,
+            unicornLibrary: backend == .unicorn ? configuration.unicornLibrary : nil,
+            cacheDirectory: configuration.cacheDirectory,
+            backend: backend
+        )
+        return try await cache.load(key) {
+            try await Resources.loadUncached(configuration: configuration, backend: backend)
+        }
+    }
+
+    /// Loaded resources depend only on these locations and execution backend: every byte is
+    /// verified against pinned hashes, whichever HTTP client fetched it.
     struct CacheKey: Hashable, Sendable {
         let appleDirectory: URL?
         let unicornLibrary: URL?
         let cacheDirectory: URL
+        let backend: ExecutionBackend
     }
 
-    private static func loadUncached(configuration: AnisetteConfiguration) async throws -> Resources {
+    private static func loadUncached(configuration: AnisetteConfiguration, backend: ExecutionBackend) async throws -> Resources {
         let build = try PinnedBuild.current()
         async let assetsResult = loadAssets(for: build, configuration: configuration)
-        async let unicornResult = loadUnicorn(configuration: configuration)
+        async let unicornResult: (URL?, String?, Bool) = backend == .unicorn
+            ? loadUnicorn(configuration: configuration)
+            : (nil, nil, false)
         let (assets, activeAssetDirectory, installedAssets) = try await assetsResult
         let (library, activeUnicornPath, installedUnicorn) = try await unicornResult
         let profile = try Profile.load(assets: assets)
         if let activeAssetDirectory { touchLastUsed(in: activeAssetDirectory) }
-        if activeUnicornPath != nil { touchLastUsed(in: library.deletingLastPathComponent()) }
+        if let library, activeUnicornPath != nil { touchLastUsed(in: library.deletingLastPathComponent()) }
         if installedAssets || installedUnicorn {
             pruneCache(
                 in: configuration.cacheDirectory,
@@ -111,7 +170,7 @@ struct Resources: Sendable {
                 keepingUnicornPath: activeUnicornPath
             )
         }
-        return Resources(profile: profile, library: library)
+        return Resources(profile: profile, engine: library.map(Engine.unicorn) ?? .hypervisor)
     }
 
     private static func loadAssets(

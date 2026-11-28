@@ -68,9 +68,11 @@ struct BuildRotation {
         // Prove the candidate before writing it: ADI must start and answer an OTP request for an
         // unprovisioned identity with its not-provisioned status.
         let profile = try Profile.load(assets: assets, configuration: configuration)
-        let library = try await UnicornArtifact.current.resolve(in: AnisetteConfiguration.defaultCacheDirectory, http: http).url
-        let runtime = try ADIRuntime(identifier: withUnsafeBytes(of: UUID().uuid) { Data($0) }, state: Data(), profile: profile,
-                                     library: UnicornLibrary(url: library), cancellation: Cancellation())
+        let engine: Resources.Engine = try Resources.resolveBackend(.automatic) == .hypervisor ? .hypervisor
+            : .unicorn(try await UnicornArtifact.current.resolve(in: AnisetteConfiguration.defaultCacheDirectory, http: http).url)
+        let makeEngine = try engine.factory(cancellation: Cancellation())
+        let runtime = try ADIRuntime(identifier: withUnsafeBytes(of: UUID().uuid) { Data($0) }, state: Data(),
+                                     profile: profile, makeEngine: makeEngine)
         let error = #expect(throws: AnisetteError.self) { _ = try runtime.requestOTP() }
         try #require(error?.adiStatus == AnisetteError.notProvisionedStatus,
                      "ADI did not run on the new build: \(String(describing: error))")

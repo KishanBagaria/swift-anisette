@@ -29,7 +29,8 @@ let package = Package(
                 .product(name: "Crypto", package: "swift-crypto"),
                 .product(name: "CryptoExtras", package: "swift-crypto"),
             ],
-            resources: [.process("Resources")]
+            resources: [.process("Resources")],
+            linkerSettings: [.linkedFramework("Hypervisor", .when(platforms: [.macOS]))]
         ),
         .executableTarget(
             name: "anisette-example",
