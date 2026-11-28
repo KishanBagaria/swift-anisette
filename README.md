@@ -1,6 +1,6 @@
 # swift-anisette
 
-Local anisette generation in Swift for macOS and Linux. Runs Apple's ADI implementation using `Hypervisor.framework` on entitled Apple Silicon Macs, falling back to Unicorn elsewhere. The caller handles provisioning HTTP requests and stores the resulting state; Apple ID credentials stay with the caller.
+Local anisette generation in Swift for macOS and Linux. Runs Apple's ADI implementation natively via `Hypervisor.framework` on entitled Apple Silicon Macs or `/dev/kvm` on ARM64 Linux, falling back to Unicorn elsewhere. The caller handles provisioning HTTP requests and stores the resulting state; Apple ID credentials stay with the caller.
 
 Requires Swift 6.2 or later. iOS is not supported.
 
@@ -12,7 +12,7 @@ Requires Swift 6.2 or later. iOS is not supported.
 
 Add `.product(name: "Anisette", package: "swift-anisette")` to your target's dependencies.
 
-Linux needs zlib development headers (`zlib1g-dev` on Ubuntu). Apple Silicon macOS apps with `com.apple.security.hypervisor` use `Hypervisor.framework` by default and avoid downloading Unicorn; without it (e.g., unsigned CLI runs or non-nested CI VMs) and on Intel Macs, the library falls back to Unicorn, which on hardened macOS apps requires `com.apple.security.cs.allow-unsigned-executable-memory` and `com.apple.security.cs.disable-library-validation`.
+Linux needs zlib development headers (`zlib1g-dev` on Ubuntu). On ARM64 Linux hosts where `/dev/kvm` is accessible, the library uses KVM by default and avoids downloading Unicorn; otherwise it falls back to Unicorn. Apple Silicon macOS apps with `com.apple.security.hypervisor` use `Hypervisor.framework` by default and avoid downloading Unicorn; without it (e.g., unsigned CLI runs or non-nested CI VMs) and on Intel Macs, the library falls back to Unicorn, which on hardened macOS apps requires `com.apple.security.cs.allow-unsigned-executable-memory` and `com.apple.security.cs.disable-library-validation`.
 
 ## Example
 
@@ -70,7 +70,7 @@ Keep each identity's UUID stable and serialize its entire read → generate → 
 
 First use extracts the required files from Apple's public restore image (and downloads Unicorn when Unicorn is used). This fetches about 215 MB in ranged requests, takes a few minutes, and keeps about 90 MB. Downloads are verified and cached in the user's cache directory under `swift-anisette`. Call `AnisetteContext.prepare(configuration:)` at startup to pre-warm and verify the runtime without opening a context. Nothing is logged meanwhile; wrap `AnisetteHTTPClient.live` in your own `httpClient` to report progress, as the example does.
 
-Pass an `AnisetteConfiguration` to `prepare`, `open`, `with`, or `provision` for a custom cache (`cacheDirectory`), offline assets (`appleDirectory`, `unicornLibrary`), execution `backend` (`.automatic`, `.hypervisor`, or `.unicorn`), or your own downloader (`httpClient`). `unicornLibrary` is only used when running on Unicorn.
+Pass an `AnisetteConfiguration` to `prepare`, `open`, `with`, or `provision` for a custom cache (`cacheDirectory`), offline assets (`appleDirectory`, `unicornLibrary`), execution `backend` (`.automatic`, `.hypervisor`, `.kvm`, or `.unicorn`), or your own downloader (`httpClient`). `unicornLibrary` is only used when running on Unicorn.
 
 ```swift
 let configuration = AnisetteConfiguration(cacheDirectory: appSupport.appendingPathComponent("anisette"))

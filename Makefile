@@ -8,7 +8,7 @@ test:
 	swift test
 
 # Ad-hoc signs the Swift Testing runner with com.apple.security.hypervisor and runs the suite.
-# Pass FILTER=... to run matching tests (e.g., `make test-hypervisor FILTER=HypervisorTests`).
+# Pass FILTER=... to run matching tests (e.g., `make test-hypervisor FILTER=ARM64VirtualizationTests`).
 test-hypervisor:
 	./Support/test-hypervisor.sh $(if $(FILTER),--filter "$(FILTER)")
 

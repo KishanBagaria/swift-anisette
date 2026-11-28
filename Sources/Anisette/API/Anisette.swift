@@ -5,11 +5,13 @@ import Foundation
 public struct AnisetteConfiguration: Sendable {
     /// Guest execution backend used to run Apple's ARM64 code.
     public enum Backend: String, Sendable, Equatable, Hashable, CaseIterable {
-        /// Uses Apple's `Hypervisor.framework` on Apple Silicon macOS when available and entitled,
-        /// falling back to Unicorn otherwise (including unentitled processes, Intel Macs, and Linux).
+        /// Uses Apple's `Hypervisor.framework` on entitled Apple Silicon macOS or Linux `/dev/kvm`
+        /// on ARM64 Linux when available, falling back to Unicorn otherwise.
         case automatic
         /// Requires Apple's `Hypervisor.framework` (Apple Silicon macOS with `com.apple.security.hypervisor`).
         case hypervisor
+        /// Requires Linux KVM (`/dev/kvm` on ARM64 Linux).
+        case kvm
         /// Always runs in Unicorn (`unicornLibrary` if set, otherwise the pinned cached wheel).
         case unicorn
     }
@@ -17,7 +19,7 @@ public struct AnisetteConfiguration: Sendable {
     /// Directory containing verified Apple assets for offline use; when `nil`, assets are cached in `cacheDirectory`.
     public var appleDirectory: URL?
     /// Path to a preinstalled `libunicorn` shared library used when running on Unicorn; when `nil`, the pinned wheel
-    /// is cached in `cacheDirectory`. Ignored when `Hypervisor.framework` is active.
+    /// is cached in `cacheDirectory`. Ignored when `Hypervisor.framework` or KVM is active.
     public var unicornLibrary: URL?
     /// Directory used to cache downloaded Apple assets and, when Unicorn is used, the Unicorn runtime.
     public var cacheDirectory: URL

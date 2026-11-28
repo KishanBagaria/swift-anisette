@@ -3,66 +3,145 @@ import Foundation
 import Testing
 @testable import Anisette
 
+/// Shared ARM64 virtualization helpers, plus guest execution on this host's native backend
+/// (Hypervisor.framework on macOS, KVM on Linux) when it is available.
 @Suite(.serialized)
-struct HypervisorTests {
+struct ARM64VirtualizationTests {
     private static let environment = AnisetteTests.environment
 
-    private static var hasHypervisor: Bool { Resources.isHypervisorAvailable }
+    private static var hasNativeBackend: Bool { Resources.nativeBackend.map(Resources.isAvailable) ?? false }
 
     @Test func explicitBackendResolutionAndFallbackBehavior() throws {
         #expect(try Resources.resolveBackend(.unicorn) == .unicorn)
-        #if os(macOS) && arch(arm64)
-        if Self.hasHypervisor {
-            #expect(try Resources.resolveBackend(.automatic) == .hypervisor)
-            #expect(try Resources.resolveBackend(.hypervisor) == .hypervisor)
-        } else {
-            #expect(try Resources.resolveBackend(.automatic) == .unicorn)
-            let error = #expect(throws: AnisetteError.self) {
-                _ = try Resources.resolveBackend(.hypervisor)
+        #expect(try Resources.resolveBackend(.automatic) == (Self.hasNativeBackend ? Resources.nativeBackend : .unicorn))
+        let explicit: [(AnisetteConfiguration.Backend, Resources.ExecutionBackend, String)] = [
+            (.hypervisor, .hypervisor, "Hypervisor"), (.kvm, .kvm, "KVM"),
+        ]
+        for (requested, backend, name) in explicit {
+            if Self.hasNativeBackend, backend == Resources.nativeBackend {
+                #expect(try Resources.resolveBackend(requested) == backend)
+            } else {
+                let error = #expect(throws: AnisetteError.self) {
+                    _ = try Resources.resolveBackend(requested)
+                }
+                #expect(error?.description.contains(name) == true)
             }
-            #expect(error?.description.contains("Hypervisor") == true)
         }
-        #else
-        #expect(try Resources.resolveBackend(.automatic) == .unicorn)
-        let error = #expect(throws: AnisetteError.self) {
-            _ = try Resources.resolveBackend(.hypervisor)
-        }
-        #expect(error?.description.contains("Apple Silicon macOS") == true)
-        #endif
     }
 
-    @Test func explicitHypervisorFailsWithoutNetworkWhenUnavailable() async {
-        guard !Self.hasHypervisor else { return }
+    @Test(arguments: [(AnisetteConfiguration.Backend.hypervisor, "Hypervisor"), (.kvm, "KVM")])
+    func explicitNativeBackendFailsWithoutNetworkWhenUnavailable(backend: AnisetteConfiguration.Backend, name: String) async {
+        guard (try? Resources.resolveBackend(backend)) == nil else { return }
         let missingAssets = FileManager.default.temporaryDirectory
-            .appendingPathComponent("anisette-hv-missing-\(UUID().uuidString)")
+            .appendingPathComponent("anisette-native-missing-\(UUID().uuidString)")
         let config = AnisetteConfiguration(
             appleDirectory: missingAssets,
             httpClient: AnisetteTests.offline,
-            backend: .hypervisor
+            backend: backend
         )
         let error = await #expect(throws: AnisetteError.self) {
             try await AnisetteContext.prepare(configuration: config)
         }
-        #expect(error?.description.contains("Hypervisor") == true)
+        #expect(error?.description.contains(name) == true)
     }
 
-    #if os(macOS) && arch(arm64)
+    @Test func ipaAllocatorCoalescesReusesAndReclaimsToZero() throws {
+        let allocator = IPAAllocator(base: 0x4000_0000, limit: 0x1_0000_0000)
+        let a = try allocator.allocate(16384)
+        let b = try allocator.allocate(32768)
+        let c = try allocator.allocate(16384)
+        #expect(allocator.allocatedBytes == 65536)
+        allocator.release(a..<a + 16384)
+        allocator.release(c..<c + 16384)
+        allocator.release(b..<b + 32768)
+        #expect(allocator.allocatedBytes == 0)
+        #expect(allocator.highWaterMark == 0)
+
+        for _ in 0..<300 {
+            let slab = try allocator.allocate(65536)
+            #expect(slab == 0x4000_0000)
+            allocator.release(slab..<slab + 65536)
+        }
+        #expect(allocator.allocatedBytes == 0)
+        #expect(allocator.highWaterMark == 0)
+    }
+
+    @Test func ipaAllocatorRejectsInvalidSizesAndExhaustion() throws {
+        let allocator = IPAAllocator(base: 0x4000_0000, limit: 0x4001_0000)
+        #expect(throws: AnisetteError.self) { _ = try allocator.allocate(0) }
+        #expect(throws: AnisetteError.self) { _ = try allocator.allocate(4096) }
+        let first = try allocator.allocate(32768)
+        let second = try allocator.allocate(32768)
+        #expect(first == 0x4000_0000)
+        #expect(second == 0x4000_8000)
+        #expect(throws: AnisetteError.self) { _ = try allocator.allocate(16384) }
+        allocator.release(first..<first + 32768)
+        let reused = try allocator.allocate(16384)
+        #expect(reused == first)
+        #expect(allocator.allocatedBytes == 49152)
+    }
+
+    @Test func asidAllocatorWrapsAndTracksLastOwner() {
+        let pool = ASIDAllocator()
+        var firstPass: [(id: UInt64, asid: UInt8)] = []
+        for _ in 0..<255 {
+            let identity = pool.allocate()
+            #expect(identity.asid != 0)
+            #expect(pool.needsFlush(for: identity.asid, engineID: identity.id))
+            pool.markOwner(asid: identity.asid, engineID: identity.id)
+            #expect(!pool.needsFlush(for: identity.asid, engineID: identity.id))
+            firstPass.append(identity)
+        }
+        #expect(Set(firstPass.map(\.asid)).count == 255)
+        #expect(pool.liveCount == 255)
+
+        pool.release(firstPass[0].asid)
+        #expect(pool.liveCount == 254)
+        let reused = pool.allocate()
+        #expect(reused.asid == firstPass[0].asid)
+        #expect(pool.needsFlush(for: reused.asid, engineID: reused.id))
+        pool.markOwner(asid: reused.asid, engineID: reused.id)
+        #expect(!pool.needsFlush(for: reused.asid, engineID: reused.id))
+    }
+
+    @Test func arm64Stage1ConfigurationComputesTCRAndRejectsUnsupportedGranule() throws {
+        // PARange=5 (48-bit PA), TGran4=0 (4 KiB supported)
+        let mmfr0Full: UInt64 = 5
+        let config40 = try #require(ARM64.stage1Configuration(ipaBits: 40, mmfr0: mmfr0Full))
+        #expect(config40.ipaLimit == (UInt64(1) << 40))
+        #expect((config40.tcr >> 32) & 0x7 == 2) // IPS=2 (40-bit)
+
+        // Clamp IPS when hardware PARange (1 -> 36-bit) is smaller than requested IPA (48-bit).
+        let mmfr0SmallPA: UInt64 = 1
+        let configClamped = try #require(ARM64.stage1Configuration(ipaBits: 48, mmfr0: mmfr0SmallPA))
+        #expect(configClamped.ipaLimit == (UInt64(1) << 36))
+        #expect((configClamped.tcr >> 32) & 0x7 == 1) // IPS=1 (36-bit)
+
+        // TGran4 = 0xf means 4 KiB Stage-1 granule unsupported.
+        let mmfr0No4K: UInt64 = (0xf << 28) | 5
+        #expect(ARM64.stage1Configuration(ipaBits: 40, mmfr0: mmfr0No4K) == nil)
+    }
+
+    #if arch(arm64) && (os(macOS) || os(Linux))
+    private static var nativeConfigurationBackend: AnisetteConfiguration.Backend {
+        Resources.nativeBackend == .kvm ? .kvm : .hypervisor
+    }
+
     static func makeMachine(
         imports: [String: UInt64] = [:],
         cancellation: Cancellation? = nil,
         pauseRunLoop: Bool = false
     ) throws -> GuestMachine {
         let cancel = try cancellation ?? Cancellation()
-        let runtime = try HypervisorRuntime.shared()
-        let engine = try HypervisorEngine(runtime: runtime, cancellation: cancel)
+        let engine = try ARM64Engine(runtime: try NativeRuntime.shared(), cancellation: cancel)
         return try GuestMachine(name: "test", profile: try .synthetic(imports: imports), engine: engine,
                                 pauseRunLoop: pauseRunLoop)
     }
 
-    @Test(.enabled(if: hasHypervisor))
-    func hypervisorSkipsUnicornDownloadWhenActive() async throws {
+    @Test(.enabled(if: hasNativeBackend))
+    func nativeBackendSkipsUnicornDownloadWhenActive() async throws {
         let missingAssets = FileManager.default.temporaryDirectory
-            .appendingPathComponent("anisette-hv-no-unicorn-\(UUID().uuidString)")
+            .appendingPathComponent("anisette-native-no-unicorn-\(UUID().uuidString)")
         let requestedUnicorn = Flag()
         let config = AnisetteConfiguration(
             appleDirectory: missingAssets,
@@ -84,12 +163,12 @@ struct HypervisorTests {
                 backend: .automatic
             )
             let resources = try await Resources.load(configuration: offlineConfig)
-            #expect(resources.engine == .hypervisor)
+            #expect(resources.engine == (try Resources.Engine(#require(Resources.nativeBackend), unicornLibrary: nil)))
         }
     }
 
-    @Test(.enabled(if: hasHypervisor))
-    func hypervisorExecutes4KiBPagesHighVAsSIMDFaultsAndICache() throws {
+    @Test(.enabled(if: hasNativeBackend))
+    func executes4KiBPagesHighVAsSIMDFaultsAndICache() throws {
         let machine = try Self.makeMachine()
         let codePage0: UInt64 = 0x180001000 // Non-16 KiB aligned 4 KiB page
         let codePage1: UInt64 = 0x180002000
@@ -134,7 +213,7 @@ struct HypervisorTests {
         try machine.engine.write(icacheVA, Data.littleEndian(UInt32(0xd2844440)) + Data.littleEndian(UInt32(0xd65f03c0)))
         #expect(try machine.invoke(icacheVA) == 0x2222)
 
-        // Unexpected guest fault vectors through VBAR_EL1 (HVC #0xFFFF) and reports ELR/ESR/FAR.
+        // Unexpected guest fault vectors through VBAR_EL1 (trap #0xFFFF) and reports ELR/ESR/FAR.
         let faultVA = highDataPage + 0x200
         try machine.engine.write(faultVA, UInt32(0xf9400000)) // ldr x0, [x0]
         let error = #expect(throws: AnisetteError.self) {
@@ -147,8 +226,8 @@ struct HypervisorTests {
         #expect(try machine.engine.register(.pc) == faultVA)
     }
 
-    @Test(.enabled(if: hasHypervisor))
-    func hypervisorHVCServiceCallsOnceRedirectAndPauseRunLoop() throws {
+    @Test(.enabled(if: hasNativeBackend))
+    func serviceCallsOnceRedirectAndPauseRunLoop() throws {
         let mallocStub = GuestServices.base
         let freeStub = GuestServices.base + 16
         let onceStub = GuestServices.base + 32
@@ -232,15 +311,15 @@ struct HypervisorTests {
         _ = try machine.invoke(loopCaller, runLoopStub)
         #expect(machine.services.pausedAtRunLoop)
 
-        // Service fault inside HVC #0 propagates cleanly.
+        // Service fault inside service trap #0 propagates cleanly.
         let abortError = #expect(throws: AnisetteError.self) {
             _ = try machine.invoke(loopCaller, abortStub)
         }
         #expect(abortError?.description == "Guest aborted")
     }
 
-    @Test(.enabled(if: hasHypervisor))
-    func hypervisorNestedInvocationsPreserveRegistersAndSeparateAddressSpaces() throws {
+    @Test(.enabled(if: hasNativeBackend))
+    func nestedInvocationsPreserveRegistersAndSeparateAddressSpaces() throws {
         let stub = GuestServices.base
         let m1 = try Self.makeMachine(imports: ["_IOConnectCallStructMethod": stub])
         let m2 = try Self.makeMachine(imports: ["_mach_msg_rpc_from_kernel_proper": stub])
@@ -302,15 +381,15 @@ struct HypervisorTests {
         #expect(try m1.engine.read(indirectBuf, as: UInt64.self) == 0x2222 + 0x200 + 0x300 + 10 + 3)
     }
 
-    @Test(.enabled(if: hasHypervisor))
-    func hypervisorCancellationAndVirtualTimerTimeout() async throws {
+    @Test(.enabled(if: hasNativeBackend))
+    func cancellationAndTimeout() async throws {
         let cancellation = try Cancellation()
         let loopMachine = try Self.makeMachine(cancellation: cancellation)
         let loopVA: UInt64 = 0x230000000
         try loopMachine.engine.map(loopVA, 4096)
         try loopMachine.engine.write(loopVA, UInt32(0x14000000)) // b .
 
-        // Cancel active vCPU execution via hv_vcpus_exit.
+        // Cancel active vCPU execution by forcing a vCPU exit.
         let cancelTask = Task.detached {
             try? await Task.sleep(for: .milliseconds(25))
             cancellation.cancel()
@@ -322,14 +401,14 @@ struct HypervisorTests {
         #expect(ContinuousClock.now - cancelStart < .seconds(5))
         await cancelTask.value
 
-        // Subsequent unrelated engine must not fail from the previous cancellation's hv_vcpus_exit.
+        // Subsequent unrelated engine must not fail from the previous cancellation's forced exit.
         let cleanMachine = try Self.makeMachine()
         let cleanVA: UInt64 = 0x230000000
         try cleanMachine.engine.map(cleanVA, 4096)
         try cleanMachine.engine.write(cleanVA, Data.littleEndian(UInt32(0xd2800fe0)) + Data.littleEndian(UInt32(0xd65f03c0)))
         #expect(try cleanMachine.invoke(cleanVA) == 0x7f)
 
-        // ARM virtual timer timeout triggers cleanly.
+        // Execution timeout triggers cleanly.
         let timeoutStart = ContinuousClock.now
         let timeoutError = #expect(throws: AnisetteError.self) {
             try cleanMachine.engine.write(cleanVA, UInt32(0x14000000)) // b .
@@ -339,30 +418,9 @@ struct HypervisorTests {
         #expect(timeoutError?.description == "Guest execution timed out")
     }
 
-    @Test func ipaAllocatorCoalescesReusesAndReclaimsToZero() throws {
-        let allocator = IPAAllocator(base: 0x4000_0000, limit: 0x1_0000_0000)
-        let a = try allocator.allocate(16384)
-        let b = try allocator.allocate(32768)
-        let c = try allocator.allocate(16384)
-        #expect(allocator.allocatedBytes == 65536)
-        allocator.release(a..<a + 16384)
-        allocator.release(c..<c + 16384)
-        allocator.release(b..<b + 32768)
-        #expect(allocator.allocatedBytes == 0)
-        #expect(allocator.highWaterMark == 0)
-
-        for _ in 0..<300 {
-            let slab = try allocator.allocate(65536)
-            #expect(slab == 0x4000_0000)
-            allocator.release(slab..<slab + 65536)
-        }
-        #expect(allocator.allocatedBytes == 0)
-        #expect(allocator.highWaterMark == 0)
-    }
-
-    @Test(.enabled(if: hasHypervisor))
-    func hypervisorTeardownReclaimsIPAAndHandlesASIDWraparound() throws {
-        let runtime = try HypervisorRuntime.shared()
+    @Test(.enabled(if: hasNativeBackend))
+    func teardownReclaimsIPAAndHandlesASIDWraparound() throws {
+        let runtime = try NativeRuntime.shared()
         let codeVA: UInt64 = 0x240000000
 
         // Create > 255 sequential 104 MiB GuestMachines using the same guest VA to exercise both
@@ -383,12 +441,12 @@ struct HypervisorTests {
         #expect(runtime.ipaHighWaterMark < 4 << 30)
     }
 
-    @Test(.enabled(if: hasHypervisor && environment["ANISETTE_APPLE_DIR"] != nil))
-    func multipleHypervisorContextsInterleaveCleanly() async throws {
+    @Test(.enabled(if: hasNativeBackend && environment["ANISETTE_APPLE_DIR"] != nil))
+    func multipleNativeContextsInterleaveCleanly() async throws {
         let config = AnisetteConfiguration(
             appleDirectory: URL(fileURLWithPath: try #require(Self.environment["ANISETTE_APPLE_DIR"])),
             httpClient: AnisetteTests.offline,
-            backend: .hypervisor
+            backend: Self.nativeConfigurationBackend
         )
         let contextA = try await AnisetteContext.open(identifier: UUID(), configuration: config)
         let contextB = try await AnisetteContext.open(identifier: UUID(), configuration: config)
@@ -414,7 +472,6 @@ struct HypervisorTests {
     }
     #endif
 }
-
 
 private extension GuestEngine {
     func write(_ address: UInt64, words: [UInt32]) throws {

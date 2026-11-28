@@ -15,13 +15,25 @@ struct Resources: Sendable {
 
     enum ExecutionBackend: Hashable, Sendable {
         case hypervisor
+        case kvm
         case unicorn
     }
 
     /// The resolved backend, carrying the Unicorn library it runs on when applicable.
     enum Engine: Hashable, Sendable {
         case hypervisor
+        case kvm
         case unicorn(URL)
+
+        init(_ backend: ExecutionBackend, unicornLibrary: URL?) throws {
+            switch backend {
+            case .hypervisor: self = .hypervisor
+            case .kvm: self = .kvm
+            case .unicorn:
+                guard let unicornLibrary else { throw AnisetteError("Unicorn library was not resolved") }
+                self = .unicorn(unicornLibrary)
+            }
+        }
 
         /// Loads the backend once; the returned closure creates engines that share it.
         func factory(
@@ -33,22 +45,44 @@ struct Resources: Sendable {
                 let library = try loadLibrary(url)
                 return { try Unicorn(library: library, cancellation: cancellation) }
             case .hypervisor:
-                #if os(macOS) && arch(arm64)
-                let runtime = try HypervisorRuntime.shared()
-                return { try HypervisorEngine(runtime: runtime, cancellation: cancellation) }
-                #else
-                throw AnisetteError("Hypervisor backend is only supported on Apple Silicon macOS")
-                #endif
+                let makeEngine = try nativeEngineMaker(.hypervisor)
+                return { try makeEngine(cancellation) }
+            case .kvm:
+                let makeEngine = try nativeEngineMaker(.kvm)
+                return { try makeEngine(cancellation) }
             }
         }
     }
 
-    static var isHypervisorAvailable: Bool {
-        #if os(macOS) && arch(arm64)
-        HypervisorRuntime.isAvailable
+    /// This host's hardware-virtualization backend, if it has one.
+    #if arch(arm64) && os(macOS)
+    static let nativeBackend: ExecutionBackend? = .hypervisor
+    #elseif arch(arm64) && os(Linux)
+    static let nativeBackend: ExecutionBackend? = .kvm
+    #else
+    static let nativeBackend: ExecutionBackend? = nil
+    #endif
+
+    /// Whether `backend` is this host's hardware-virtualization backend and its VM can be created.
+    static func isAvailable(_ backend: ExecutionBackend) -> Bool {
+        #if arch(arm64) && (os(macOS) || os(Linux))
+        backend == nativeBackend && NativeRuntime.isAvailable
         #else
         false
         #endif
+    }
+
+    /// Loads the shared VM for hardware-virtualization `backend` and returns a maker for its engines.
+    private static func nativeEngineMaker(_ backend: ExecutionBackend) throws -> (Cancellation) throws -> any GuestEngine {
+        #if arch(arm64) && (os(macOS) || os(Linux))
+        if backend == nativeBackend {
+            let runtime = try NativeRuntime.shared()
+            return { try ARM64Engine(runtime: runtime, cancellation: $0) }
+        }
+        #endif
+        throw backend == .kvm
+            ? AnisetteError("KVM backend is only supported on ARM64 Linux")
+            : AnisetteError("Hypervisor backend is only supported on Apple Silicon macOS")
     }
 
     let profile: Profile
@@ -118,14 +152,14 @@ struct Resources: Sendable {
         case .unicorn:
             return .unicorn
         case .automatic:
-            return isHypervisorAvailable ? .hypervisor : .unicorn
+            if let nativeBackend, isAvailable(nativeBackend) { return nativeBackend }
+            return .unicorn
         case .hypervisor:
-            #if os(macOS) && arch(arm64)
-            _ = try HypervisorRuntime.shared()
+            _ = try nativeEngineMaker(.hypervisor)
             return .hypervisor
-            #else
-            throw AnisetteError("Hypervisor backend is only supported on Apple Silicon macOS")
-            #endif
+        case .kvm:
+            _ = try nativeEngineMaker(.kvm)
+            return .kvm
         }
     }
 
@@ -170,7 +204,7 @@ struct Resources: Sendable {
                 keepingUnicornPath: activeUnicornPath
             )
         }
-        return Resources(profile: profile, engine: library.map(Engine.unicorn) ?? .hypervisor)
+        return Resources(profile: profile, engine: try Engine(backend, unicornLibrary: library))
     }
 
     private static func loadAssets(
