@@ -9,20 +9,18 @@ import Testing
 struct ARM64VirtualizationTests {
     private static let environment = AnisetteTests.environment
 
-    private static var hasNativeBackend: Bool { Resources.nativeBackend.map(Resources.isAvailable) ?? false }
+    private static var hasNativeBackend: Bool { Resources.isNativeAvailable }
 
     @Test func explicitBackendResolutionAndFallbackBehavior() throws {
-        #expect(try Resources.resolveBackend(.unicorn) == .unicorn)
-        #expect(try Resources.resolveBackend(.automatic) == (Self.hasNativeBackend ? Resources.nativeBackend : .unicorn))
-        let explicit: [(AnisetteConfiguration.Backend, Resources.ExecutionBackend, String)] = [
-            (.hypervisor, .hypervisor, "Hypervisor"), (.kvm, .kvm, "KVM"),
-        ]
-        for (requested, backend, name) in explicit {
-            if Self.hasNativeBackend, backend == Resources.nativeBackend {
-                #expect(try Resources.resolveBackend(requested) == backend)
+        #expect(try !Resources.usesNativeBackend(.unicorn))
+        #expect(try Resources.usesNativeBackend(.automatic) == Self.hasNativeBackend)
+        let explicit: [(AnisetteConfiguration.Backend, String)] = [(.hypervisor, "Hypervisor"), (.kvm, "KVM")]
+        for (requested, name) in explicit {
+            if Self.hasNativeBackend, requested == Resources.nativeBackend {
+                #expect(try Resources.usesNativeBackend(requested))
             } else {
                 let error = #expect(throws: AnisetteError.self) {
-                    _ = try Resources.resolveBackend(requested)
+                    _ = try Resources.usesNativeBackend(requested)
                 }
                 #expect(error?.description.contains(name) == true)
             }
@@ -31,7 +29,7 @@ struct ARM64VirtualizationTests {
 
     @Test(arguments: [(AnisetteConfiguration.Backend.hypervisor, "Hypervisor"), (.kvm, "KVM")])
     func explicitNativeBackendFailsWithoutNetworkWhenUnavailable(backend: AnisetteConfiguration.Backend, name: String) async {
-        guard (try? Resources.resolveBackend(backend)) == nil else { return }
+        guard (try? Resources.usesNativeBackend(backend)) == nil else { return }
         let missingAssets = FileManager.default.temporaryDirectory
             .appendingPathComponent("anisette-native-missing-\(UUID().uuidString)")
         let config = AnisetteConfiguration(
@@ -123,10 +121,6 @@ struct ARM64VirtualizationTests {
     }
 
     #if arch(arm64) && (os(macOS) || os(Linux))
-    private static var nativeConfigurationBackend: AnisetteConfiguration.Backend {
-        Resources.nativeBackend == .kvm ? .kvm : .hypervisor
-    }
-
     static func makeMachine(
         imports: [String: UInt64] = [:],
         cancellation: Cancellation? = nil,
@@ -163,7 +157,7 @@ struct ARM64VirtualizationTests {
                 backend: .automatic
             )
             let resources = try await Resources.load(configuration: offlineConfig)
-            #expect(resources.engine == (try Resources.Engine(#require(Resources.nativeBackend), unicornLibrary: nil)))
+            #expect(resources.engine == .native)
         }
     }
 
@@ -456,7 +450,7 @@ struct ARM64VirtualizationTests {
         let config = AnisetteConfiguration(
             appleDirectory: URL(fileURLWithPath: try #require(Self.environment["ANISETTE_APPLE_DIR"])),
             httpClient: AnisetteTests.offline,
-            backend: Self.nativeConfigurationBackend
+            backend: try #require(Resources.nativeBackend)
         )
         let contextA = try await AnisetteContext.open(identifier: UUID(), configuration: config)
         let contextB = try await AnisetteContext.open(identifier: UUID(), configuration: config)

@@ -46,18 +46,13 @@ struct GuestEmulationTests {
         cachedUnicornURL != nil || environment["ANISETTE_APPLE_DIR"] != nil
     }
 
-    private static var hasHypervisor: Bool { Resources.isAvailable(.hypervisor) }
-
-    private static var hasKVM: Bool { Resources.isAvailable(.kvm) }
-
     private static var hasAnyBackend: Bool {
-        hasHypervisor || hasKVM || hasUnicorn
+        Resources.isNativeAvailable || hasUnicorn
     }
 
     private static var availableBackends: [AnisetteConfiguration.Backend] {
         var backends: [AnisetteConfiguration.Backend] = []
-        if hasHypervisor { backends.append(.hypervisor) }
-        if hasKVM { backends.append(.kvm) }
+        if Resources.isNativeAvailable, let native = Resources.nativeBackend { backends.append(native) }
         if hasUnicorn { backends.append(.unicorn) }
         return backends
     }
@@ -70,8 +65,7 @@ struct GuestEmulationTests {
     }
 
     private static func syntheticMachine(backend: AnisetteConfiguration.Backend = .automatic) async throws -> GuestMachine {
-        let resolved = try Resources.resolveBackend(backend)
-        let engine = try Resources.Engine(resolved, unicornLibrary: resolved == .unicorn ? try await unicornURL() : nil)
+        let engine: Resources.Engine = try Resources.usesNativeBackend(backend) ? .native : .unicorn(try await unicornURL())
         return try GuestMachine(name: "test", profile: try .synthetic(),
                                 engine: try engine.factory(cancellation: Cancellation())())
     }

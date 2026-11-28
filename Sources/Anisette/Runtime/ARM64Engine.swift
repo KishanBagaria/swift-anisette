@@ -10,17 +10,16 @@ enum ARM64Exit {
 }
 
 /// Process-wide single-vCPU VM (Hypervisor.framework or KVM) confined to its worker thread.
-protocol ARM64VCPU: AnyObject {
+protocol ARM64VCPU: AnyObject, Sendable {
     associatedtype Slab: GuestSlab
     associatedtype Deadline
 
-    /// Trap instructions with immediates 0 (service call), 1 (return), and 0xffff (exception vector).
-    static var serviceTrap: UInt32 { get }
-    static var returnTrap: UInt32 { get }
-    static var vectorTrap: UInt32 { get }
+    /// The VM, or why it cannot be created on this host; created once on first access.
+    static var availability: Result<Self, AnisetteError> { get }
+    /// Encodes the trap instruction with immediate `imm`: 0 (service call), 1 (return), 2 (TLBI
+    /// trampoline), or 0xffff (exception vector).
+    static func trap(_ imm: UInt16) -> UInt32
     static var trapMnemonic: String { get }
-    /// Whether the vCPU PC already points past the trap instruction on a trap exit.
-    static var trapAdvancesPC: Bool { get }
     static func invalidateICache(_ address: UnsafeMutableRawPointer, _ size: Int)
 
     var asidAllocator: ASIDAllocator { get }
@@ -42,15 +41,23 @@ protocol ARM64VCPU: AnyObject {
     /// Runs `body` with `deadline` armed, restoring any enclosing deadline afterwards.
     func withDeadline<T>(_ deadline: Deadline?, _ body: () throws -> T) throws -> T
     /// Runs the vCPU until its next exit; throws on timeout, cancellation, or an unexpected exit.
+    /// The PC on a trap exit is unspecified; `ARM64Engine` sets it.
     func run(cancellation: Cancellation, deadline: Deadline?) throws -> ARM64Exit
 }
 
 extension ARM64VCPU {
+    static var isAvailable: Bool {
+        (try? availability.get()) != nil
+    }
+
+    static func shared() throws -> Self {
+        try availability.get()
+    }
+
     var userAllocatedIPABytes: UInt64 {
         (try? performSync {
             let total = ipaAllocator.allocatedBytes
-            let trampolineBytes = ARM64.ipaSlabSize * 2
-            return total >= trampolineBytes ? total - trampolineBytes : 0
+            return total >= ARM64.trampolineSlabSize ? total - ARM64.trampolineSlabSize : 0
         }) ?? 0
     }
 
@@ -112,7 +119,7 @@ final class ARM64Engine<VCPU: ARM64VCPU>: GuestEngine {
                     allocateSlab: runtime.allocateSlab,
                     releaseSlab: runtime.releaseSlab,
                     invalidateICache: VCPU.invalidateICache,
-                    vectorTrapInstruction: VCPU.vectorTrap
+                    vectorTrapInstruction: VCPU.trap(0xffff)
                 )
                 return (identity, space)
             } catch {
@@ -225,11 +232,11 @@ final class ARM64Engine<VCPU: ARM64VCPU>: GuestEngine {
     }
 
     func writeReturnTrap(at address: UInt64) throws {
-        try write(address, VCPU.returnTrap)
+        try write(address, VCPU.trap(1))
     }
 
     func installServiceStub(at address: UInt64) throws {
-        try write(address, Data.littleEndian(VCPU.serviceTrap) + Data.littleEndian(ARM64.ret))
+        try write(address, Data.littleEndian(VCPU.trap(0)) + Data.littleEndian(ARM64.ret))
     }
 
     func installServiceDispatcher(range: Range<UInt64>, handler: @escaping (UInt64) -> Void) throws {
@@ -247,6 +254,10 @@ final class ARM64Engine<VCPU: ARM64VCPU>: GuestEngine {
             setStopped(false)
             hasExecuted = true
             try register(.pc, begin)
+            guard let cancelID = cancellation.addHandler({ [runtime] in runtime.requestExit() }) else {
+                throw CancellationError()
+            }
+            defer { cancellation.removeHandler(cancelID) }
             let deadline = timeout > 0 ? runtime.deadline(afterMicroseconds: timeout) : nil
             try runtime.withDeadline(deadline) { try runLoop(until: end, deadline: deadline) }
         }
@@ -274,7 +285,7 @@ final class ARM64Engine<VCPU: ARM64VCPU>: GuestEngine {
             }
             // Point PC at the stub's trailing RET before invoking the handler so
             // handlers like `dispatchOnce`/`pthreadOnce` can redirect PC without being overwritten.
-            if !VCPU.trapAdvancesPC { try runtime.write(.pc, address &+ 4) }
+            try runtime.write(.pc, address &+ 4)
             setStopped(false)
             handler(address)
             try cancellation.check()
@@ -283,7 +294,7 @@ final class ARM64Engine<VCPU: ARM64VCPU>: GuestEngine {
             guard address == end else {
                 throw AnisetteError("Unexpected \(mnemonic) #1 at 0x\(String(address, radix: 16))")
             }
-            if VCPU.trapAdvancesPC { try runtime.write(.pc, address) }
+            try runtime.write(.pc, address)
             return true
         case 0xffff:
             let elr = try runtime.read(.elrEL1)
@@ -336,7 +347,6 @@ final class ARM64Engine<VCPU: ARM64VCPU>: GuestEngine {
 
     func loadIntoVCPU() throws {
         try runtime.write(.ttbr0EL1, ttbr0)
-        try runtime.write(.vbarEL1, ARM64.vbarGuestVA)
         for (reg, path) in RegisterSnapshot.contextRegisters {
             try runtime.write(reg, registers[keyPath: path])
         }

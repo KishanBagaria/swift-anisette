@@ -37,60 +37,43 @@ struct HypervisorSlab: GuestSlab {
 
 /// Process-wide Hypervisor VM + single vCPU singleton confined to `thread`.
 final class HypervisorRuntime: ARM64VCPU, @unchecked Sendable {
-    private enum Availability {
-        case available(HypervisorRuntime)
-        case unavailable(hv_return_t, String)
-    }
+    static let availability: Result<HypervisorRuntime, AnisetteError> = initializeRuntime()
 
-    private static let cachedAvailability: Availability = initializeRuntime()
-
-    static var isAvailable: Bool {
-        if case .available = cachedAvailability { return true }
-        return false
-    }
-
-    static func shared() throws -> HypervisorRuntime {
-        switch cachedAvailability {
-        case .available(let runtime):
-            return runtime
-        case .unavailable(let code, let message):
-            throw unavailableError(code: code, message: message)
-        }
-    }
-
-    private static func unavailableError(code: hv_return_t, message: String) -> AnisetteError {
+    private static func unavailable(_ code: hv_return_t, _ message: String) -> Result<HypervisorRuntime, AnisetteError> {
         if code == hv_return_t(HV_DENIED) {
-            return AnisetteError("Hypervisor backend is unavailable (HV_DENIED: missing com.apple.security.hypervisor entitlement)")
+            return .failure(AnisetteError(
+                "Hypervisor backend is unavailable (HV_DENIED: missing com.apple.security.hypervisor entitlement)"
+            ))
         }
         if code == hv_return_t(HV_UNSUPPORTED) || code == hv_return_t(HV_NO_DEVICE) {
-            return AnisetteError("Hypervisor backend is unsupported on this host (\(message))")
+            return .failure(AnisetteError("Hypervisor backend is unsupported on this host (\(message))"))
         }
-        return AnisetteError("Hypervisor backend is unavailable (\(message))")
+        return .failure(AnisetteError("Hypervisor backend is unavailable (\(message))"))
     }
 
     static func formatStatus(_ code: hv_return_t) -> String {
         "0x\(String(UInt32(bitPattern: code), radix: 16))"
     }
 
-    private static func initializeRuntime() -> Availability {
+    private static func initializeRuntime() -> Result<HypervisorRuntime, AnisetteError> {
         let thread = GuestWorkerThread(name: "swift-anisette.hypervisor")
         do {
             return try thread.performSync {
                 let vmStatus = hv_vm_create(nil)
                 guard vmStatus == HV_SUCCESS else {
-                    return .unavailable(vmStatus, "hv_vm_create failed: \(formatStatus(vmStatus))")
+                    return unavailable(vmStatus, "hv_vm_create failed: \(formatStatus(vmStatus))")
                 }
                 var vcpu: hv_vcpu_t = 0
                 var exitPointer: UnsafeMutablePointer<hv_vcpu_exit_t>?
                 let vcpuStatus = hv_vcpu_create(&vcpu, &exitPointer, nil)
                 guard vcpuStatus == HV_SUCCESS, let exitPointer else {
                     _ = hv_vm_destroy()
-                    return .unavailable(vcpuStatus, "hv_vcpu_create failed: \(formatStatus(vcpuStatus))")
+                    return unavailable(vcpuStatus, "hv_vcpu_create failed: \(formatStatus(vcpuStatus))")
                 }
                 return try finishSetup(thread: thread, vcpu: vcpu, exitPointer: exitPointer)
             }
         } catch {
-            return .unavailable(hv_return_t(HV_ERROR), "\(error)")
+            return unavailable(hv_return_t(HV_ERROR), "\(error)")
         }
     }
 
@@ -98,19 +81,19 @@ final class HypervisorRuntime: ARM64VCPU, @unchecked Sendable {
         thread: GuestWorkerThread,
         vcpu: hv_vcpu_t,
         exitPointer: UnsafeMutablePointer<hv_vcpu_exit_t>
-    ) throws -> Availability {
+    ) throws -> Result<HypervisorRuntime, AnisetteError> {
         var mmfr0: UInt64 = 0
         guard hv_vcpu_get_sys_reg(vcpu, HV_SYS_REG_ID_AA64MMFR0_EL1, &mmfr0) == HV_SUCCESS else {
             _ = hv_vcpu_destroy(vcpu)
             _ = hv_vm_destroy()
-            return .unavailable(hv_return_t(HV_UNSUPPORTED), "Cannot read ID_AA64MMFR0_EL1")
+            return unavailable(hv_return_t(HV_UNSUPPORTED), "Cannot read ID_AA64MMFR0_EL1")
         }
         var ipaBits: UInt32 = 36
         if hv_vm_config_get_default_ipa_size(&ipaBits) != HV_SUCCESS { ipaBits = 36 }
         guard let stage1 = ARM64.stage1Configuration(ipaBits: Int(ipaBits), mmfr0: mmfr0) else {
             _ = hv_vcpu_destroy(vcpu)
             _ = hv_vm_destroy()
-            return .unavailable(hv_return_t(HV_UNSUPPORTED), "4 KiB Stage-1 translation granule or IPA space is unsupported")
+            return unavailable(hv_return_t(HV_UNSUPPORTED), "4 KiB Stage-1 translation granule or IPA space is unsupported")
         }
         var vtimerOffset: UInt64 = 0
         _ = hv_vcpu_get_vtimer_offset(vcpu, &vtimerOffset)
@@ -118,10 +101,10 @@ final class HypervisorRuntime: ARM64VCPU, @unchecked Sendable {
         mach_timebase_info(&timebase)
 
         let ipaAllocator = IPAAllocator(base: ARM64.ipaBase, limit: stage1.ipaLimit)
-        let trampolineSlab = try HypervisorSlab.allocate(size: Int(ARM64.ipaSlabSize * 2), from: ipaAllocator)
+        let trampolineSlab = try HypervisorSlab.allocate(size: Int(ARM64.trampolineSlabSize), from: ipaAllocator)
         let trampolineTTBR0 = ARM64.writeTLBITrampoline(
             into: trampolineSlab,
-            trapInstruction: ARM64.hvc2,
+            trapInstruction: trap(2),
             invalidateICache: sys_icache_invalidate
         )
 
@@ -135,14 +118,11 @@ final class HypervisorRuntime: ARM64VCPU, @unchecked Sendable {
             trampolineTTBR0: trampolineTTBR0
         )
         try runtime.configureConstantSystemRegisters(tcr: stage1.tcr)
-        return .available(runtime)
+        return .success(runtime)
     }
 
-    static let serviceTrap = ARM64.hvc0
-    static let returnTrap = ARM64.hvc1
-    static let vectorTrap = ARM64.hvcFFFF
+    static func trap(_ imm: UInt16) -> UInt32 { ARM64.hvc(imm) }
     static let trapMnemonic = "HVC"
-    static let trapAdvancesPC = true
 
     static func invalidateICache(_ address: UnsafeMutableRawPointer, _ size: Int) {
         sys_icache_invalidate(address, size)
@@ -186,6 +166,7 @@ final class HypervisorRuntime: ARM64VCPU, @unchecked Sendable {
         try hvCheck(hv_vcpu_set_sys_reg(vcpu, HV_SYS_REG_MAIR_EL1, ARM64.mairNormalWB), "MAIR_EL1")
         try hvCheck(hv_vcpu_set_sys_reg(vcpu, HV_SYS_REG_TCR_EL1, tcr), "TCR_EL1")
         try hvCheck(hv_vcpu_set_sys_reg(vcpu, HV_SYS_REG_SCTLR_EL1, ARM64.sctlrEL1), "SCTLR_EL1")
+        try hvCheck(hv_vcpu_set_sys_reg(vcpu, HV_SYS_REG_VBAR_EL1, ARM64.vbarGuestVA), "VBAR_EL1")
         try hvCheck(hv_vcpu_set_vtimer_mask(vcpu, true), "vtimer mask")
     }
 
@@ -281,19 +262,14 @@ final class HypervisorRuntime: ARM64VCPU, @unchecked Sendable {
         exitLock.lock()
         runningVCPU = vcpu
         exitLock.unlock()
-        guard let cancelID = cancellation.addHandler({ [weak self] in self?.requestExit() }) else {
-            exitLock.lock()
-            runningVCPU = nil
-            exitLock.unlock()
-            throw CancellationError()
-        }
-        let rc = hv_vcpu_run(vcpu)
-        cancellation.removeHandler(cancelID)
+        // Checked after publishing `runningVCPU` so a concurrent cancel either is seen here or kicks the run.
+        let rc = cancellation.isCancelled ? nil : hv_vcpu_run(vcpu)
         exitLock.lock()
         runningVCPU = nil
         exitLock.unlock()
         _ = hv_vcpu_set_sys_reg(vcpu, HV_SYS_REG_CNTV_CTL_EL0, 0)
         _ = hv_vcpu_set_vtimer_mask(vcpu, true)
+        guard let rc else { throw CancellationError() }
         try hvCheck(rc, "vcpu run")
         try cancellation.check()
 
@@ -325,22 +301,25 @@ final class HypervisorRuntime: ARM64VCPU, @unchecked Sendable {
         case system(hv_sys_reg_t)
     }
 
-    private static let registerLocations: [ARM64Register: Location] = [
-        .pc: .core(HV_REG_PC), .cpsr: .core(HV_REG_CPSR), .fpcr: .core(HV_REG_FPCR), .fpsr: .core(HV_REG_FPSR),
-        .spEL0: .system(HV_SYS_REG_SP_EL0), .spEL1: .system(HV_SYS_REG_SP_EL1),
-        .elrEL1: .system(HV_SYS_REG_ELR_EL1), .spsrEL1: .system(HV_SYS_REG_SPSR_EL1),
-        .esrEL1: .system(HV_SYS_REG_ESR_EL1), .farEL1: .system(HV_SYS_REG_FAR_EL1),
-        .tpidrEL0: .system(HV_SYS_REG_TPIDR_EL0), .tpidrROEL0: .system(HV_SYS_REG_TPIDRRO_EL0),
-        .tpidrEL1: .system(HV_SYS_REG_TPIDR_EL1), .contextidrEL1: .system(HV_SYS_REG_CONTEXTIDR_EL1),
-        .ttbr0EL1: .system(HV_SYS_REG_TTBR0_EL1), .vbarEL1: .system(HV_SYS_REG_VBAR_EL1),
-    ]
-
     private static func location(of reg: ARM64Register) -> Location {
-        if case .x(let index) = reg { return .core(hv_reg_t(UInt32(index))) }
-        guard let mapped = registerLocations[reg] else {
-            preconditionFailure("Unmapped ARM64Register \(reg)")
+        switch reg {
+        case .x(let index): .core(hv_reg_t(UInt32(index)))
+        case .pc: .core(HV_REG_PC)
+        case .cpsr: .core(HV_REG_CPSR)
+        case .fpcr: .core(HV_REG_FPCR)
+        case .fpsr: .core(HV_REG_FPSR)
+        case .spEL0: .system(HV_SYS_REG_SP_EL0)
+        case .spEL1: .system(HV_SYS_REG_SP_EL1)
+        case .elrEL1: .system(HV_SYS_REG_ELR_EL1)
+        case .spsrEL1: .system(HV_SYS_REG_SPSR_EL1)
+        case .esrEL1: .system(HV_SYS_REG_ESR_EL1)
+        case .farEL1: .system(HV_SYS_REG_FAR_EL1)
+        case .tpidrEL0: .system(HV_SYS_REG_TPIDR_EL0)
+        case .tpidrROEL0: .system(HV_SYS_REG_TPIDRRO_EL0)
+        case .tpidrEL1: .system(HV_SYS_REG_TPIDR_EL1)
+        case .contextidrEL1: .system(HV_SYS_REG_CONTEXTIDR_EL1)
+        case .ttbr0EL1: .system(HV_SYS_REG_TTBR0_EL1)
         }
-        return mapped
     }
 
     func read(_ reg: ARM64Register) throws -> UInt64 {

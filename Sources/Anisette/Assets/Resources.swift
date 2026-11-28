@@ -13,27 +13,11 @@ struct Resources: Sendable {
     static let defaultPruneMaxAge: TimeInterval = 14 * 24 * 60 * 60
     static let defaultKeepRecent = 2
 
-    enum ExecutionBackend: Hashable, Sendable {
-        case hypervisor
-        case kvm
-        case unicorn
-    }
-
     /// The resolved backend, carrying the Unicorn library it runs on when applicable.
     enum Engine: Hashable, Sendable {
-        case hypervisor
-        case kvm
+        /// This host's hardware-virtualization backend (`Resources.nativeBackend`).
+        case native
         case unicorn(URL)
-
-        init(_ backend: ExecutionBackend, unicornLibrary: URL?) throws {
-            switch backend {
-            case .hypervisor: self = .hypervisor
-            case .kvm: self = .kvm
-            case .unicorn:
-                guard let unicornLibrary else { throw AnisetteError("Unicorn library was not resolved") }
-                self = .unicorn(unicornLibrary)
-            }
-        }
 
         /// Loads the backend once; the returned closure creates engines that share it.
         func factory(
@@ -44,11 +28,8 @@ struct Resources: Sendable {
             case .unicorn(let url):
                 let library = try loadLibrary(url)
                 return { try Unicorn(library: library, cancellation: cancellation) }
-            case .hypervisor:
-                let makeEngine = try nativeEngineMaker(.hypervisor)
-                return { try makeEngine(cancellation) }
-            case .kvm:
-                let makeEngine = try nativeEngineMaker(.kvm)
+            case .native:
+                let makeEngine = try nativeEngineMaker()
                 return { try makeEngine(cancellation) }
             }
         }
@@ -56,33 +37,30 @@ struct Resources: Sendable {
 
     /// This host's hardware-virtualization backend, if it has one.
     #if arch(arm64) && os(macOS)
-    static let nativeBackend: ExecutionBackend? = .hypervisor
+    static let nativeBackend: AnisetteConfiguration.Backend? = .hypervisor
     #elseif arch(arm64) && os(Linux)
-    static let nativeBackend: ExecutionBackend? = .kvm
+    static let nativeBackend: AnisetteConfiguration.Backend? = .kvm
     #else
-    static let nativeBackend: ExecutionBackend? = nil
+    static let nativeBackend: AnisetteConfiguration.Backend? = nil
     #endif
 
-    /// Whether `backend` is this host's hardware-virtualization backend and its VM can be created.
-    static func isAvailable(_ backend: ExecutionBackend) -> Bool {
+    /// Whether this host has a hardware-virtualization backend whose VM can be created.
+    static var isNativeAvailable: Bool {
         #if arch(arm64) && (os(macOS) || os(Linux))
-        backend == nativeBackend && NativeRuntime.isAvailable
+        NativeRuntime.isAvailable
         #else
         false
         #endif
     }
 
-    /// Loads the shared VM for hardware-virtualization `backend` and returns a maker for its engines.
-    private static func nativeEngineMaker(_ backend: ExecutionBackend) throws -> (Cancellation) throws -> any GuestEngine {
+    /// Loads the shared native VM and returns a maker for its engines.
+    private static func nativeEngineMaker() throws -> (Cancellation) throws -> any GuestEngine {
         #if arch(arm64) && (os(macOS) || os(Linux))
-        if backend == nativeBackend {
-            let runtime = try NativeRuntime.shared()
-            return { try ARM64Engine(runtime: runtime, cancellation: $0) }
-        }
+        let runtime = try NativeRuntime.shared()
+        return { try ARM64Engine(runtime: runtime, cancellation: $0) }
+        #else
+        throw AnisetteError("This host has no hardware-virtualization backend")
         #endif
-        throw backend == .kvm
-            ? AnisetteError("KVM backend is only supported on ARM64 Linux")
-            : AnisetteError("Hypervisor backend is only supported on Apple Silicon macOS")
     }
 
     let profile: Profile
@@ -147,33 +125,35 @@ struct Resources: Sendable {
         }
     }
 
-    static func resolveBackend(_ requested: AnisetteConfiguration.Backend) throws -> ExecutionBackend {
+    /// Whether `requested` runs on the native backend; throws if it names one this host cannot run.
+    static func usesNativeBackend(_ requested: AnisetteConfiguration.Backend) throws -> Bool {
         switch requested {
         case .unicorn:
-            return .unicorn
+            return false
         case .automatic:
-            if let nativeBackend, isAvailable(nativeBackend) { return nativeBackend }
-            return .unicorn
-        case .hypervisor:
-            _ = try nativeEngineMaker(.hypervisor)
-            return .hypervisor
-        case .kvm:
-            _ = try nativeEngineMaker(.kvm)
-            return .kvm
+            return isNativeAvailable
+        case .hypervisor, .kvm:
+            guard requested == nativeBackend else {
+                throw requested == .kvm
+                    ? AnisetteError("KVM backend is only supported on ARM64 Linux")
+                    : AnisetteError("Hypervisor backend is only supported on Apple Silicon macOS")
+            }
+            _ = try nativeEngineMaker()
+            return true
         }
     }
 
     /// Verifying the ~78 MB of assets is expensive, so do it once per configuration per process.
     static func load(configuration: AnisetteConfiguration) async throws -> Resources {
-        let backend = try resolveBackend(configuration.backend)
+        let native = try usesNativeBackend(configuration.backend)
         let key = CacheKey(
             appleDirectory: configuration.appleDirectory,
-            unicornLibrary: backend == .unicorn ? configuration.unicornLibrary : nil,
+            unicornLibrary: native ? nil : configuration.unicornLibrary,
             cacheDirectory: configuration.cacheDirectory,
-            backend: backend
+            native: native
         )
         return try await cache.load(key) {
-            try await Resources.loadUncached(configuration: configuration, backend: backend)
+            try await Resources.loadUncached(configuration: configuration, native: native)
         }
     }
 
@@ -183,15 +163,15 @@ struct Resources: Sendable {
         let appleDirectory: URL?
         let unicornLibrary: URL?
         let cacheDirectory: URL
-        let backend: ExecutionBackend
+        let native: Bool
     }
 
-    private static func loadUncached(configuration: AnisetteConfiguration, backend: ExecutionBackend) async throws -> Resources {
+    private static func loadUncached(configuration: AnisetteConfiguration, native: Bool) async throws -> Resources {
         let build = try PinnedBuild.current()
         async let assetsResult = loadAssets(for: build, configuration: configuration)
-        async let unicornResult: (URL?, String?, Bool) = backend == .unicorn
-            ? loadUnicorn(configuration: configuration)
-            : (nil, nil, false)
+        async let unicornResult: (URL?, String?, Bool) = native
+            ? (nil, nil, false)
+            : loadUnicorn(configuration: configuration)
         let (assets, activeAssetDirectory, installedAssets) = try await assetsResult
         let (library, activeUnicornPath, installedUnicorn) = try await unicornResult
         let profile = try Profile.load(assets: assets)
@@ -204,7 +184,7 @@ struct Resources: Sendable {
                 keepingUnicornPath: activeUnicornPath
             )
         }
-        return Resources(profile: profile, engine: try Engine(backend, unicornLibrary: library))
+        return Resources(profile: profile, engine: library.map(Engine.unicorn) ?? .native)
     }
 
     private static func loadAssets(

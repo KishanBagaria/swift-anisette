@@ -78,28 +78,13 @@ struct KVMSlab: GuestSlab {
 
 /// Process-wide Linux ARM64 `/dev/kvm` VM + single vCPU singleton confined to `thread`.
 final class KVMRuntime: ARM64VCPU, @unchecked Sendable {
-    private enum Availability {
-        case available(KVMRuntime)
-        case unavailable(String)
+    static let availability: Result<KVMRuntime, AnisetteError> = initializeRuntime()
+
+    private static func unavailable(_ message: String) -> Result<KVMRuntime, AnisetteError> {
+        .failure(AnisetteError("KVM backend is unavailable (\(message))"))
     }
 
-    private static let cachedAvailability: Availability = initializeRuntime()
-
-    static var isAvailable: Bool {
-        if case .available = cachedAvailability { return true }
-        return false
-    }
-
-    static func shared() throws -> KVMRuntime {
-        switch cachedAvailability {
-        case .available(let runtime):
-            return runtime
-        case .unavailable(let message):
-            throw AnisetteError("KVM backend is unavailable (\(message))")
-        }
-    }
-
-    private static func initializeRuntime() -> Availability {
+    private static func initializeRuntime() -> Result<KVMRuntime, AnisetteError> {
         let thread = GuestWorkerThread(name: "anisette.kvm")
         do {
             return try thread.performSync {
@@ -108,30 +93,27 @@ final class KVMRuntime: ARM64VCPU, @unchecked Sendable {
                 }
                 var kickSignal: Int32 = 0
                 guard anisette_kvm_setup_worker_thread(&kickSignal) == 0 else {
-                    return .unavailable("worker signal setup failed: \(String(cString: strerror(errno)))")
+                    return unavailable("worker signal setup failed: \(String(cString: strerror(errno)))")
                 }
                 var errorBuf = [CChar](repeating: 0, count: 256)
                 guard let kvm = anisette_kvm_create(kickSignal, &errorBuf, errorBuf.count) else {
                     let message = errorBuf.withUnsafeBufferPointer { String(cString: $0.baseAddress!) }
-                    return .unavailable(message.isEmpty ? "KVM initialization failed" : message)
+                    return unavailable(message.isEmpty ? "KVM initialization failed" : message)
                 }
                 do {
-                    return .available(try KVMRuntime(thread: thread, kvm: kvm, kickSignal: kickSignal))
+                    return .success(try KVMRuntime(thread: thread, kvm: kvm, kickSignal: kickSignal))
                 } catch {
                     anisette_kvm_destroy(kvm)
-                    return .unavailable("\(error)")
+                    return unavailable("\(error)")
                 }
             }
         } catch {
-            return .unavailable("\(error)")
+            return unavailable("\(error)")
         }
     }
 
-    static let serviceTrap = ARM64.brk0
-    static let returnTrap = ARM64.brk1
-    static let vectorTrap = ARM64.brkFFFF
+    static func trap(_ imm: UInt16) -> UInt32 { ARM64.brk(imm) }
     static let trapMnemonic = "BRK"
-    static let trapAdvancesPC = false
 
     static func invalidateICache(_ address: UnsafeMutableRawPointer, _ size: Int) {
         anisette_kvm_icache_invalidate(address, size)
@@ -165,20 +147,21 @@ final class KVMRuntime: ARM64VCPU, @unchecked Sendable {
         ipaAllocator = IPAAllocator(base: ARM64.ipaBase, limit: stage1.ipaLimit)
         memslots = MemslotAllocator(maxSlots: anisette_kvm_max_memslots(kvm))
         let trampolineSlab = try KVMSlab.allocate(
-            size: Int(ARM64.ipaSlabSize * 2),
+            size: Int(ARM64.trampolineSlabSize),
             kvm: kvm,
             allocator: ipaAllocator,
             slots: memslots
         )
         trampolineTTBR0 = ARM64.writeTLBITrampoline(
             into: trampolineSlab,
-            trapInstruction: ARM64.brk2,
+            trapInstruction: Self.trap(2),
             invalidateICache: Self.invalidateICache
         )
         try setReg(ANISETTE_KVM_REG_CPACR_EL1, ARM64.cpacrFPEN)
         try setReg(ANISETTE_KVM_REG_MAIR_EL1, ARM64.mairNormalWB)
         try setReg(ANISETTE_KVM_REG_TCR_EL1, stage1.tcr)
         try setReg(ANISETTE_KVM_REG_SCTLR_EL1, ARM64.sctlrEL1)
+        try setReg(ANISETTE_KVM_REG_VBAR_EL1, ARM64.vbarGuestVA)
     }
 
     var isCurrentThread: Bool { thread.isCurrentThread }
@@ -253,18 +236,12 @@ final class KVMRuntime: ARM64VCPU, @unchecked Sendable {
         exitLock.lock()
         running = true
         exitLock.unlock()
-        guard let cancelID = cancellation.addHandler({ [weak self] in self?.requestExit() }) else {
-            exitLock.lock()
-            running = false
-            exitLock.unlock()
-            throw CancellationError()
-        }
 
         var exit = anisette_kvm_exit()
-        let rc = anisette_kvm_run(kvm, &exit)
+        // Checked after publishing `running` so a concurrent cancel either is seen here or kicks the run.
+        let rc = cancellation.isCancelled ? nil : anisette_kvm_run(kvm, &exit)
         let runErrno = errno
 
-        cancellation.removeHandler(cancelID)
         exitLock.lock()
         running = false
         let wasKicked = kicked
@@ -272,6 +249,7 @@ final class KVMRuntime: ARM64VCPU, @unchecked Sendable {
         exitLock.unlock()
         if wasKicked { anisette_kvm_drain_kick(kickSignal) }
 
+        guard let rc else { throw CancellationError() }
         if rc != 0 {
             throw AnisetteError("KVM vcpu run failed: \(String(cString: strerror(runErrno)))")
         }
@@ -312,23 +290,25 @@ final class KVMRuntime: ARM64VCPU, @unchecked Sendable {
         }
     }
 
-    private static let registerMap: [ARM64Register: anisette_kvm_reg] = [
-        .spEL0: ANISETTE_KVM_REG_SP_EL0, .spEL1: ANISETTE_KVM_REG_SP_EL1,
-        .pc: ANISETTE_KVM_REG_PC, .cpsr: ANISETTE_KVM_REG_PSTATE,
-        .fpcr: ANISETTE_KVM_REG_FPCR, .fpsr: ANISETTE_KVM_REG_FPSR,
-        .elrEL1: ANISETTE_KVM_REG_ELR_EL1, .spsrEL1: ANISETTE_KVM_REG_SPSR_EL1,
-        .esrEL1: ANISETTE_KVM_REG_ESR_EL1, .farEL1: ANISETTE_KVM_REG_FAR_EL1,
-        .tpidrEL0: ANISETTE_KVM_REG_TPIDR_EL0, .tpidrROEL0: ANISETTE_KVM_REG_TPIDRRO_EL0,
-        .tpidrEL1: ANISETTE_KVM_REG_TPIDR_EL1, .contextidrEL1: ANISETTE_KVM_REG_CONTEXTIDR_EL1,
-        .ttbr0EL1: ANISETTE_KVM_REG_TTBR0_EL1, .vbarEL1: ANISETTE_KVM_REG_VBAR_EL1,
-    ]
-
     private static func kvmRegister(_ reg: ARM64Register) -> anisette_kvm_reg {
-        if case .x(let index) = reg { return anisette_kvm_reg(ANISETTE_KVM_REG_X0.rawValue + UInt32(index)) }
-        guard let mapped = registerMap[reg] else {
-            preconditionFailure("Unmapped ARM64Register \(reg)")
+        switch reg {
+        case .x(let index): anisette_kvm_reg(ANISETTE_KVM_REG_X0.rawValue + UInt32(index))
+        case .spEL0: ANISETTE_KVM_REG_SP_EL0
+        case .spEL1: ANISETTE_KVM_REG_SP_EL1
+        case .pc: ANISETTE_KVM_REG_PC
+        case .cpsr: ANISETTE_KVM_REG_PSTATE
+        case .fpcr: ANISETTE_KVM_REG_FPCR
+        case .fpsr: ANISETTE_KVM_REG_FPSR
+        case .elrEL1: ANISETTE_KVM_REG_ELR_EL1
+        case .spsrEL1: ANISETTE_KVM_REG_SPSR_EL1
+        case .esrEL1: ANISETTE_KVM_REG_ESR_EL1
+        case .farEL1: ANISETTE_KVM_REG_FAR_EL1
+        case .tpidrEL0: ANISETTE_KVM_REG_TPIDR_EL0
+        case .tpidrROEL0: ANISETTE_KVM_REG_TPIDRRO_EL0
+        case .tpidrEL1: ANISETTE_KVM_REG_TPIDR_EL1
+        case .contextidrEL1: ANISETTE_KVM_REG_CONTEXTIDR_EL1
+        case .ttbr0EL1: ANISETTE_KVM_REG_TTBR0_EL1
         }
-        return mapped
     }
 
     private func setReg(_ reg: anisette_kvm_reg, _ value: UInt64) throws {

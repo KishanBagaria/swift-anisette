@@ -102,11 +102,11 @@ final class Unicorn: GuestEngine {
     }
 
     func writeReturnTrap(at address: UInt64) throws {
-        try write(address, UInt32(0xd4200000)) // BRK #0
+        try write(address, ARM64.brk(0))
     }
 
     func installServiceStub(at address: UInt64) throws {
-        try write(address, UInt32(0xd65f03c0)) // RET
+        try write(address, ARM64.ret)
     }
 
     func installServiceDispatcher(range: Range<UInt64>, handler: @escaping (UInt64) -> Void) throws {

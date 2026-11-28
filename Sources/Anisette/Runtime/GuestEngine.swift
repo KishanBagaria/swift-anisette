@@ -22,8 +22,10 @@ final class Cancellation: @unchecked Sendable {
         for handler in active { handler() }
     }
 
+    var isCancelled: Bool { anisette_cancellation_is_cancelled(pointer) }
+
     func check() throws {
-        if anisette_cancellation_is_cancelled(pointer) { throw CancellationError() }
+        if isCancelled { throw CancellationError() }
     }
 
     func addHandler(_ handler: @escaping @Sendable () -> Void) -> UUID? {

@@ -15,16 +15,11 @@ enum ARM64 {
     static let vbarGuestVA: UInt64 = 0x8000_0000_0000
     static let trampolineVA: UInt64 = 0x8000_0001_0000
     static let ipaBase: UInt64 = 0x4000_0000
+    /// Size of the slab holding the TLBI trampoline's page tables and code.
+    static let trampolineSlabSize = ipaSlabSize * 2
 
-    static let hvc0: UInt32 = 0xd4000002
-    static let hvc1: UInt32 = 0xd4000022
-    static let hvc2: UInt32 = 0xd4000042
-    static let hvcFFFF: UInt32 = 0xd41fffe2
-
-    static let brk0: UInt32 = 0xd4200000
-    static let brk1: UInt32 = 0xd4200020
-    static let brk2: UInt32 = 0xd4200040
-    static let brkFFFF: UInt32 = 0xd43fffe0
+    static func hvc(_ imm: UInt16) -> UInt32 { 0xd4000002 | UInt32(imm) << 5 }
+    static func brk(_ imm: UInt16) -> UInt32 { 0xd4200000 | UInt32(imm) << 5 }
 
     static let ret: UInt32 = 0xd65f03c0
     static let tlbiVMALLE1: UInt32 = 0xd508871f
@@ -63,7 +58,7 @@ enum ARM64 {
         return (tcr, ipaLimit)
     }
 
-    /// Populates a 32 KiB slab with an ASID=0 4-level page table + EL1 TLBI trampoline at `ARM64.trampolineVA`.
+    /// Populates a `trampolineSlabSize` slab with an ASID=0 4-level page table + EL1 TLBI trampoline at `ARM64.trampolineVA`.
     static func writeTLBITrampoline<Slab: GuestSlab>(
         into slab: Slab,
         trapInstruction: UInt32,
@@ -95,7 +90,7 @@ enum ARM64Register: Hashable, Sendable {
     case spEL0, spEL1, pc, cpsr, fpcr, fpsr
     case elrEL1, spsrEL1, esrEL1, farEL1
     case tpidrEL0, tpidrROEL0, tpidrEL1, contextidrEL1
-    case ttbr0EL1, vbarEL1
+    case ttbr0EL1
 }
 
 /// Snapshot of guest architectural registers preserved across vCPU context switches.
@@ -262,8 +257,8 @@ final class GuestAddressSpace<Slab: GuestSlab> {
     private var freeSubPages: [PageTable] = []
     private var regions: [MappedRegion] = []
     private var tablesByIPA: [UInt64: UnsafeMutableRawPointer] = [:]
-    let l0IPA: UInt64
     private let l0Table: PageTable
+    var l0IPA: UInt64 { l0Table.ipa }
 
     init(
         allocateSlab: @escaping (Int) throws -> Slab,
@@ -278,7 +273,6 @@ final class GuestAddressSpace<Slab: GuestSlab> {
         slabs.append(slab)
         freeSubPages += Self.pages(in: slab, from: 1).reversed()
         l0Table = PageTable(host: slab.host, ipa: slab.ipa)
-        l0IPA = slab.ipa
         tablesByIPA[l0Table.ipa] = l0Table.host
         do { try installVectorTable(trapInstruction: vectorTrapInstruction) } catch { reclaim(); throw error }
     }
@@ -339,10 +333,7 @@ final class GuestAddressSpace<Slab: GuestSlab> {
     }
 
     private func mapPage(va: UInt64, ipa: UInt64, descriptorBits: UInt64) throws {
-        let l3 = try ensureL3Table(for: va)
-        let l3Offset = Int((va >> 12) & 0x1ff) * 8
-        let leaf = (ipa & 0x0000_ffff_ffff_f000) | descriptorBits
-        l3.host.storeBytes(of: leaf.littleEndian, toByteOffset: l3Offset, as: UInt64.self)
+        try mapContiguousPages(vaStart: va, ipaStart: ipa, pageCount: 1, descriptorBits: descriptorBits)
     }
 
     private func mapContiguousPages(vaStart: UInt64, ipaStart: UInt64, pageCount: Int, descriptorBits: UInt64) throws {
@@ -380,19 +371,8 @@ final class GuestAddressSpace<Slab: GuestSlab> {
     }
 
     private func findRegion(containing address: UInt64) -> MappedRegion? {
-        var low = 0, high = regions.count
-        while low < high {
-            let middle = (low + high) / 2
-            let region = regions[middle]
-            if address < region.vaStart {
-                high = middle
-            } else if address >= region.vaEnd {
-                low = middle + 1
-            } else {
-                return region
-            }
-        }
-        return nil
+        let index = firstRegionIndex(endingAfter: address)
+        return index < regions.count && regions[index].vaStart <= address ? regions[index] : nil
     }
 
     func map(_ address: UInt64, _ size: UInt64) throws {
