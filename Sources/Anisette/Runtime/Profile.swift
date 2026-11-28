@@ -7,7 +7,7 @@ struct Profile: Sendable {
         let segments: [Segment]
         let data: Data
 
-        func load(into engine: Unicorn) throws {
+        func load(into engine: any GuestEngine) throws {
             let data = data
             var pages: [Range<UInt64>] = []
             for segment in segments where segment.size != 0 {

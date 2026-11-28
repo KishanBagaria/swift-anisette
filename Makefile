@@ -3,9 +3,14 @@ SWIFTLINT ?= swiftlint
 IPSW ?= latest
 ROTATION_ASSETS = $(CURDIR)/.build/rotation-assets
 
-.PHONY: test lint rotate
+.PHONY: test test-hypervisor lint rotate
 test:
 	swift test
+
+# Ad-hoc signs the Swift Testing runner with com.apple.security.hypervisor and runs the suite.
+# Pass FILTER=... to run matching tests (e.g., `make test-hypervisor FILTER=ARM64VirtualizationTests`).
+test-hypervisor:
+	./Support/test-hypervisor.sh $(if $(FILTER),--filter "$(FILTER)")
 
 lint:
 	$(SWIFTLINT) lint --strict

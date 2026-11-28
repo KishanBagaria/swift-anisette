@@ -6,6 +6,20 @@ All Apple and Unicorn inputs are pinned. `.github/workflows/upstream-check.yml` 
 ANISETTE_TEST_UPSTREAM=1 swift test --filter UpstreamTests
 ```
 
+## Testing & Linting
+
+Run `swift test`, `make test-hypervisor` (ad-hoc signs the test runner with `com.apple.security.hypervisor`), and `make lint`. Network and cached-runtime checks are opt-in:
+
+```sh
+export ANISETTE_APPLE_DIR=~/Library/Caches/swift-anisette/test-assets
+ANISETTE_TEST_ASSETS=1 swift test --filter nativeAssetInstallation
+swift test --filter AnisetteTests
+make test-hypervisor
+ANISETTE_TEST_UNICORN=1 swift test --filter nativeUnicornArchiveDownload
+```
+
+`ANISETTE_UNICORN_LIBRARY` optionally points at a preinstalled `libunicorn` instead of downloading the pinned wheel.
+
 ## Rotating the Apple build
 
 ```sh

@@ -3,13 +3,28 @@ import Foundation
 import Testing
 @testable import Anisette
 
+extension Profile {
+    static func synthetic(imports: [String: UInt64] = [:]) throws -> Profile {
+        let entries = Profile.Entries(
+            startProvisioning: 0, endProvisioning: 0, requestOTP: 0,
+            daemonMain: 0, fairPlayDaemonMain: 0,
+            kernelStart: 0, kernelSetup: 0, kernelInit: 0,
+            kernelMessage: 0, kernelStackProbe: 0, kernelStackProbeValue: 0
+        )
+        return Profile(
+            system: try AnisetteSystemInfo.current(), images: [], entries: entries, imports: imports,
+            exports: [:], functions: [:], slots: [:], icxs: Data("synthetic-icxs-bytes".utf8)
+        )
+    }
+}
+
 private extension GuestMachine {
     func call(_ handler: String, _ arguments: [UInt64]) throws -> UInt64 {
         for (index, value) in arguments.enumerated() {
-            try engine.register(Unicorn.x0 + Int32(index), value)
+            try engine.register(.x(index), value)
         }
         try services.dispatch(handler)
-        return try engine.register(Unicorn.x0)
+        return try engine.register(.x0)
     }
 }
 
@@ -31,33 +46,28 @@ struct GuestEmulationTests {
         cachedUnicornURL != nil || environment["ANISETTE_APPLE_DIR"] != nil
     }
 
-    private static func openUnicornLibrary() async throws -> UnicornLibrary {
-        if let cached = cachedUnicornURL { return try UnicornLibrary(url: cached) }
-        let url = try await UnicornArtifact.current.resolve(
-            in: AnisetteConfiguration.defaultCacheDirectory, http: AnisetteTests.unicornOnly
-        ).url
-        return try UnicornLibrary(url: url)
+    private static var hasAnyBackend: Bool {
+        Resources.isNativeAvailable || hasUnicorn
     }
 
-    private static func syntheticMachine() async throws -> GuestMachine {
-        let library = try await openUnicornLibrary()
-        let entries = Profile.Entries(
-            startProvisioning: 0, endProvisioning: 0, requestOTP: 0,
-            daemonMain: 0, fairPlayDaemonMain: 0,
-            kernelStart: 0, kernelSetup: 0, kernelInit: 0,
-            kernelMessage: 0, kernelStackProbe: 0, kernelStackProbeValue: 0
-        )
-        let profile = Profile(
-            system: try AnisetteSystemInfo.current(),
-            images: [],
-            entries: entries,
-            imports: [:],
-            exports: [:],
-            functions: [:],
-            slots: [:],
-            icxs: Data("synthetic-icxs-bytes".utf8)
-        )
-        return try GuestMachine(name: "test", profile: profile, library: library, cancellation: Cancellation())
+    private static var availableBackends: [AnisetteConfiguration.Backend] {
+        var backends: [AnisetteConfiguration.Backend] = []
+        if Resources.isNativeAvailable, let native = Resources.nativeBackend { backends.append(native) }
+        if hasUnicorn { backends.append(.unicorn) }
+        return backends
+    }
+
+    private static func unicornURL() async throws -> URL {
+        if let cached = cachedUnicornURL { return cached }
+        return try await UnicornArtifact.current.resolve(
+            in: AnisetteConfiguration.defaultCacheDirectory, http: AnisetteTests.unicornOnly
+        ).url
+    }
+
+    private static func syntheticMachine(backend: AnisetteConfiguration.Backend = .automatic) async throws -> GuestMachine {
+        let engine: Resources.Engine = try Resources.usesNativeBackend(backend) ? .native : .unicorn(try await unicornURL())
+        return try GuestMachine(name: "test", profile: try .synthetic(),
+                                engine: try engine.factory(cancellation: Cancellation())())
     }
 
     @Test func requiredImagesMapsSharedFrameworksOnlyToCommerce() {
@@ -75,9 +85,9 @@ struct GuestEmulationTests {
         #expect(!message.contains("Incompatible Unicorn library"))
     }
 
-    @Test(.enabled(if: hasUnicorn))
-    func guestMemoryAllocatorCoalescingReallocAndAlignedReuse() async throws {
-        let machine = try await Self.syntheticMachine()
+    @Test(.enabled(if: hasAnyBackend), arguments: availableBackends)
+    func guestMemoryAllocatorCoalescingReallocAndAlignedReuse(backend: AnisetteConfiguration.Backend) async throws {
+        let machine = try await Self.syntheticMachine(backend: backend)
         let services = machine.services
 
         // Basic allocate, top-block cursor reclamation, and free-block reuse.
@@ -116,16 +126,16 @@ struct GuestEmulationTests {
         // Realloc: grow moves data, shrink stays in place.
         let original = try services.allocate(16)
         try machine.engine.write(original, Data("0123456789abcdef".utf8))
-        try machine.engine.register(Unicorn.x0, original)
-        try machine.engine.register(Unicorn.x0 + 1, 64)
+        try machine.engine.register(.x(0), original)
+        try machine.engine.register(.x(1), 64)
         #expect(try services.memoryService("realloc"))
-        let grown = try machine.engine.register(Unicorn.x0)
+        let grown = try machine.engine.register(.x0)
         #expect(grown != original)
         #expect(try machine.engine.read(grown, 16) == Data("0123456789abcdef".utf8))
-        try machine.engine.register(Unicorn.x0, grown)
-        try machine.engine.register(Unicorn.x0 + 1, 24)
+        try machine.engine.register(.x0, grown)
+        try machine.engine.register(.x(1), 24)
         #expect(try services.memoryService("realloc"))
-        #expect(try machine.engine.register(Unicorn.x0) == grown)
+        #expect(try machine.engine.register(.x0) == grown)
         #expect(services.allocations[grown]?.size == 24)
         try services.release(grown)
         #expect(services.heapCursor == 0)
@@ -149,9 +159,9 @@ struct GuestEmulationTests {
         #expect(services.heapCursor == 0)
     }
 
-    @Test(.enabled(if: hasUnicorn))
-    func emulateUnsupportedInstructions() async throws {
-        let machine = try await Self.syntheticMachine()
+    @Test(.enabled(if: hasAnyBackend), arguments: availableBackends)
+    func emulateUnsupportedInstructions(backend: AnisetteConfiguration.Backend) async throws {
+        let machine = try await Self.syntheticMachine(backend: backend)
         let codeAddress: UInt64 = 0x200000000
         let dataAddress: UInt64 = 0x200001000
         try machine.engine.map(codeAddress, 4096)
@@ -171,11 +181,11 @@ struct GuestEmulationTests {
         let v2 = Data((0..<16).map { UInt8($0 &* 3) })
         let v3 = Data((0..<16).map { UInt8(0xa5 ^ $0) })
         let expectedV0 = Data((0..<16).map { v1[$0] ^ v2[$0] ^ v3[$0] })
-        try machine.engine.vector(Unicorn.v0 + 1, v1)
-        try machine.engine.vector(Unicorn.v0 + 2, v2)
-        try machine.engine.vector(Unicorn.v0 + 3, v3)
+        try machine.engine.vector(1, v1)
+        try machine.engine.vector(2, v2)
+        try machine.engine.vector(3, v3)
         _ = try runSnippet(0xce020c20)
-        #expect(try machine.engine.vector(Unicorn.v0) == expectedV0)
+        #expect(try machine.engine.vector(0) == expectedV0)
 
         // CAS W0, W1, [X2] (0x88a07c41): matching then non-matching.
         try machine.engine.write(dataAddress, UInt32(0x11223344))
@@ -196,44 +206,177 @@ struct GuestEmulationTests {
         // SWP W0, W1, [X2] (0xb8208041): 32-bit atomic swap.
         try machine.engine.write(dataAddress, UInt32(0x12345678))
         _ = try runSnippet(0xb8208041, 0xdeadbeef_87654321, 0, dataAddress)
-        #expect(try machine.engine.register(Unicorn.x0 + 1) == 0x12345678)
+        #expect(try machine.engine.register(.x(1)) == 0x12345678)
         #expect(try machine.engine.read(dataAddress, as: UInt32.self) == 0x87654321)
 
         // SWPAL X0, X1, [X2] (0xf8e08041): 64-bit atomic swap.
         try machine.engine.write(dataAddress, UInt64(0xaabbccdd_eeff0011))
         _ = try runSnippet(0xf8e08041, 0x22334455_66778899, 0, dataAddress)
-        #expect(try machine.engine.register(Unicorn.x0 + 1) == 0xaabbccdd_eeff0011)
+        #expect(try machine.engine.register(.x(1)) == 0xaabbccdd_eeff0011)
         #expect(try machine.engine.read(dataAddress, as: UInt64.self) == 0x22334455_66778899)
 
         // Direct emulation test for CASA, CASL, SWPA, SWPL, and unsupported opcode rejection.
         try machine.engine.write(dataAddress, UInt32(0x00000010))
         try machine.engine.write(codeAddress, UInt32(0x88e07c41)) // CASA W0, W1, [X2]
-        try machine.engine.register(Unicorn.pc, codeAddress)
-        try machine.engine.register(Unicorn.x0, 0x00000010)
-        try machine.engine.register(Unicorn.x0 + 1, 0x00000020)
-        try machine.engine.register(Unicorn.x0 + 2, dataAddress)
+        try machine.engine.register(.pc, codeAddress)
+        try machine.engine.register(.x0, 0x00000010)
+        try machine.engine.register(.x(1), 0x00000020)
+        try machine.engine.register(.x(2), dataAddress)
         #expect(try machine.emulateUnsupportedInstruction())
-        #expect(try machine.engine.register(Unicorn.pc) == codeAddress + 4)
+        #expect(try machine.engine.register(.pc) == codeAddress + 4)
         #expect(try machine.engine.read(dataAddress, as: UInt32.self) == 0x00000020)
 
         try machine.engine.write(dataAddress, UInt64(0x10203040_50607080))
         try machine.engine.write(codeAddress, UInt32(0xf8608041)) // SWPL X0, X1, [X2]
-        try machine.engine.register(Unicorn.pc, codeAddress)
-        try machine.engine.register(Unicorn.x0, 0x80706050_40302010)
-        try machine.engine.register(Unicorn.x0 + 1, 0)
-        try machine.engine.register(Unicorn.x0 + 2, dataAddress)
+        try machine.engine.register(.pc, codeAddress)
+        try machine.engine.register(.x0, 0x80706050_40302010)
+        try machine.engine.register(.x(1), 0)
+        try machine.engine.register(.x(2), dataAddress)
         #expect(try machine.emulateUnsupportedInstruction())
-        #expect(try machine.engine.register(Unicorn.x0 + 1) == 0x10203040_50607080)
+        #expect(try machine.engine.register(.x(1)) == 0x10203040_50607080)
         #expect(try machine.engine.read(dataAddress, as: UInt64.self) == 0x80706050_40302010)
 
         try machine.engine.write(codeAddress, UInt32(0xd503201f)) // NOP
-        try machine.engine.register(Unicorn.pc, codeAddress)
+        try machine.engine.register(.pc, codeAddress)
         #expect(try !machine.emulateUnsupportedInstruction())
     }
 
-    @Test(.enabled(if: hasUnicorn))
-    func platformAndFilesTruncate32BitArgumentsAndHandleEdgeCases() async throws {
-        let machine = try await Self.syntheticMachine()
+    @Test(.enabled(if: hasAnyBackend), arguments: availableBackends)
+    func emulateARM64eAuthenticatedLoadsAndRCpc(backend: AnisetteConfiguration.Backend) async throws {
+        let machine = try await Self.syntheticMachine(backend: backend)
+        let codeAddress: UInt64 = 0x200000000
+        let dataAddress: UInt64 = 0x200001000
+        try machine.engine.map(codeAddress, 4096)
+        try machine.engine.map(dataAddress, 4096)
+
+        func step(_ instruction: UInt32) throws {
+            try machine.engine.write(codeAddress, instruction)
+            try machine.engine.register(.pc, codeAddress)
+            #expect(try machine.emulateUnsupportedInstruction())
+            #expect(try machine.engine.register(.pc) == codeAddress + 4)
+        }
+
+        // LDRAA / LDRAB: zero, positive, negative, and pre-indexed writeback (including SP).
+        try machine.engine.write(dataAddress + 0x20, UInt64(0x1111_2222_3333_4444))
+        try machine.engine.write(dataAddress + 0x30, UInt64(0x5555_6666_7777_8888))
+        try machine.engine.write(dataAddress + 0x10, UInt64(0x9999_aaaa_bbbb_cccc))
+        try machine.engine.write(dataAddress + 0x38, UInt64(0xdddd_eeee_ffff_0001))
+        try machine.engine.register(.x(1), dataAddress + 0x20)
+        try step(0xf8200420) // ldraa x0, [x1]
+        #expect(try machine.engine.register(.x0) == 0x1111_2222_3333_4444)
+        try step(0xf8202420) // ldraa x0, [x1, #0x10]
+        #expect(try machine.engine.register(.x0) == 0x5555_6666_7777_8888)
+        try step(0xf87fe420) // ldraa x0, [x1, #-0x10]
+        #expect(try machine.engine.register(.x0) == 0x9999_aaaa_bbbb_cccc)
+        try step(0xf8203c20) // ldraa x0, [x1, #0x18]!
+        #expect(try machine.engine.register(.x0) == 0xdddd_eeee_ffff_0001)
+        #expect(try machine.engine.register(.x(1)) == dataAddress + 0x38)
+        try machine.engine.register(.sp, dataAddress + 0x28)
+        try step(0xf8ffffe0) // ldrab x0, [sp, #-0x8]!
+        #expect(try machine.engine.register(.x0) == 0x1111_2222_3333_4444)
+        #expect(try machine.engine.register(.sp) == dataAddress + 0x20)
+
+        // LDAPRB / LDAPRH / LDAPR (32-bit and 64-bit, including SP).
+        try machine.engine.write(dataAddress, UInt64(0x0102_0304_0506_0708))
+        try machine.engine.register(.x(1), dataAddress)
+        try step(0x38bfc020) // ldaprb w0, [x1]
+        #expect(try machine.engine.register(.x0) == 0x08)
+        try step(0x78bfc020) // ldaprh w0, [x1]
+        #expect(try machine.engine.register(.x0) == 0x0708)
+        try step(0xb8bfc020) // ldapr w0, [x1]
+        #expect(try machine.engine.register(.x0) == 0x0506_0708)
+        try step(0xf8bfc020) // ldapr x0, [x1]
+        #expect(try machine.engine.register(.x0) == 0x0102_0304_0506_0708)
+        try machine.engine.register(.sp, dataAddress)
+        try step(0xf8bfc3e0) // ldapr x0, [sp]
+        #expect(try machine.engine.register(.x0) == 0x0102_0304_0506_0708)
+    }
+
+    @Test(.enabled(if: hasAnyBackend), arguments: availableBackends)
+    func emulateExtendedLSEAndSHA3(backend: AnisetteConfiguration.Backend) async throws {
+        let machine = try await Self.syntheticMachine(backend: backend)
+        let codeAddress: UInt64 = 0x200000000
+        let dataAddress: UInt64 = 0x200001000
+        try machine.engine.map(codeAddress, 4096)
+        try machine.engine.map(dataAddress, 4096)
+
+        func step(_ instruction: UInt32) throws {
+            try machine.engine.write(codeAddress, instruction)
+            try machine.engine.register(.pc, codeAddress)
+            #expect(try machine.emulateUnsupportedInstruction())
+            #expect(try machine.engine.register(.pc) == codeAddress + 4)
+        }
+
+        // Extended LSE atomics: LDADD/LDCLR/LDEOR/LDSET/STADD, byte/halfword CAS/SWP.
+        try machine.engine.write(dataAddress, UInt64(0x10))
+        try machine.engine.register(.x(2), dataAddress)
+        try machine.engine.register(.x0, 5)
+        try step(0xf8e00041) // ldaddal x0, x1, [x2]
+        #expect(try machine.engine.register(.x(1)) == 0x10)
+        #expect(try machine.engine.read(dataAddress, as: UInt64.self) == 0x15)
+        try machine.engine.register(.x0, 0x05)
+        try step(0xb8201041) // ldclr w0, w1, [x2]
+        #expect(try machine.engine.register(.x(1)) == 0x15)
+        #expect(try machine.engine.read(dataAddress, as: UInt32.self) == 0x10)
+        try machine.engine.register(.x0, 0x03)
+        try step(0xb8203041) // ldset w0, w1, [x2]
+        #expect(try machine.engine.read(dataAddress, as: UInt32.self) == 0x13)
+        try machine.engine.register(.x0, 0x0f)
+        try step(0xf8202041) // ldeor x0, x1, [x2]
+        #expect(try machine.engine.read(dataAddress, as: UInt64.self) == 0x1c)
+        try machine.engine.register(.x0, 4)
+        try step(0xf820005f) // stadd x0, [x2]
+        #expect(try machine.engine.read(dataAddress, as: UInt64.self) == 0x20)
+
+        try machine.engine.write(dataAddress, UInt16(0x1234))
+        try machine.engine.register(.x0, 0x34)
+        try machine.engine.register(.x(1), 0x78)
+        try step(0x08a07c41) // casb w0, w1, [x2]
+        #expect(try machine.engine.read(dataAddress, as: UInt16.self) == 0x1278)
+        try machine.engine.register(.x0, 0x1278)
+        try machine.engine.register(.x(1), 0x569a)
+        try step(0x48a07c41) // cash w0, w1, [x2]
+        #expect(try machine.engine.read(dataAddress, as: UInt16.self) == 0x569a)
+        try machine.engine.register(.x0, 0x99)
+        try step(0x38208041) // swpb w0, w1, [x2]
+        #expect(try machine.engine.register(.x(1)) == 0x9a)
+        #expect(try machine.engine.read(dataAddress, as: UInt16.self) == 0x5699)
+        try machine.engine.register(.x0, 0xabcd)
+        try step(0x78208041) // swph w0, w1, [x2]
+        #expect(try machine.engine.register(.x(1)) == 0x5699)
+        #expect(try machine.engine.read(dataAddress, as: UInt16.self) == 0xabcd)
+
+        // Signed/unsigned min/max LSE atomics (negative -1 vs +1 in 32-bit).
+        try machine.engine.write(dataAddress, UInt32(0xffff_ffff)) // -1 signed, 0xffffffff unsigned
+        try machine.engine.register(.x0, 1)
+        try step(0xb8204041) // ldsmax w0, w1, [x2] -> max(-1, 1) = 1
+        #expect(try machine.engine.register(.x(1)) == 0xffff_ffff)
+        #expect(try machine.engine.read(dataAddress, as: UInt32.self) == 1)
+        try machine.engine.register(.x0, 0xffff_fffe) // -2 signed
+        try step(0xb8205041) // ldsmin w0, w1, [x2] -> min(1, -2) = -2
+        #expect(try machine.engine.register(.x(1)) == 1)
+        #expect(try machine.engine.read(dataAddress, as: UInt32.self) == 0xffff_fffe)
+        try machine.engine.register(.x0, 5)
+        try step(0xb8206041) // ldumax w0, w1, [x2] -> max(0xfffffffe, 5) = 0xfffffffe
+        #expect(try machine.engine.read(dataAddress, as: UInt32.self) == 0xffff_fffe)
+        try step(0xb8207041) // ldumin w0, w1, [x2] -> min(0xfffffffe, 5) = 5
+        #expect(try machine.engine.read(dataAddress, as: UInt32.self) == 5)
+
+        // BCAX V0.16B, V1.16B, V2.16B, V3.16B (0xce220c20): V0 = V1 ^ (V2 & ~V3).
+        let v1 = Data((0..<16).map { UInt8($0 &* 5) })
+        let v2 = Data((0..<16).map { UInt8(0xf0 ^ $0) })
+        let v3 = Data((0..<16).map { UInt8(0xaa ^ ($0 &* 3)) })
+        let expected = Data((0..<16).map { v1[$0] ^ (v2[$0] & ~v3[$0]) })
+        try machine.engine.vector(1, v1)
+        try machine.engine.vector(2, v2)
+        try machine.engine.vector(3, v3)
+        try step(0xce220c20)
+        #expect(try machine.engine.vector(0) == expected)
+    }
+
+    @Test(.enabled(if: hasAnyBackend), arguments: availableBackends)
+    func platformAndFilesTruncate32BitArgumentsAndHandleEdgeCases(backend: AnisetteConfiguration.Backend) async throws {
+        let machine = try await Self.syntheticMachine(backend: backend)
         let services = machine.services
         let dirty: UInt64 = 0xdeadbeef_00000000
 
@@ -300,9 +443,9 @@ struct GuestEmulationTests {
         #expect(randomBytes != Data(count: 37))
     }
 
-    @Test(.enabled(if: hasUnicorn))
-    func xpcRefcountingFreesGuestHeapAllocations() async throws {
-        let machine = try await Self.syntheticMachine()
+    @Test(.enabled(if: hasAnyBackend), arguments: availableBackends)
+    func xpcRefcountingFreesGuestHeapAllocations(backend: AnisetteConfiguration.Backend) async throws {
+        let machine = try await Self.syntheticMachine(backend: backend)
         let services = machine.services
 
         func call(_ handler: String, _ arguments: UInt64...) throws -> UInt64 {

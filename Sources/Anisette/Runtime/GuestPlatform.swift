@@ -114,7 +114,7 @@ extension GuestServices {
         case "pthreadOnce", "dispatchOnce": try once(name)
         case "callbackComplete":
             guard let address = callbackReturns.popLast() else { throw AnisetteError("Guest callback has no return address") }
-            try engine.register(Unicorn.lr, address); try result(0)
+            try engine.register(.lr, address); try result(0)
         default: throw AnisetteError("Guest called unsupported import \(name)")
         }
     }
@@ -197,11 +197,11 @@ extension GuestServices {
             guard value != .max else { try result(0); return }
             try engine.write(predicate, UInt64.max)
             target = try engine.read(guestAddress(block, offset: 16), as: UInt64.self)
-            try engine.register(Unicorn.x0, block)
+            try engine.register(.x0, block)
         }
-        callbackReturns.append(try engine.register(Unicorn.lr))
+        callbackReturns.append(try engine.register(.lr))
         guard let completion = symbols["callback.complete"] else { throw AnisetteError("Missing callback completion") }
-        try engine.register(Unicorn.lr, completion)
-        try engine.register(Unicorn.pc, target)
+        try engine.register(.lr, completion)
+        try engine.register(.pc, target)
     }
 }

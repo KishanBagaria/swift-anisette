@@ -13,8 +13,58 @@ struct Resources: Sendable {
     static let defaultPruneMaxAge: TimeInterval = 14 * 24 * 60 * 60
     static let defaultKeepRecent = 2
 
+    /// The resolved backend, carrying the Unicorn library it runs on when applicable.
+    enum Engine: Hashable, Sendable {
+        /// This host's hardware-virtualization backend (`Resources.nativeBackend`).
+        case native
+        case unicorn(URL)
+
+        /// Loads the backend once; the returned closure creates engines that share it.
+        func factory(
+            cancellation: Cancellation,
+            loadLibrary: (URL) throws -> UnicornLibrary = { try UnicornLibrary(url: $0) }
+        ) throws -> () throws -> any GuestEngine {
+            switch self {
+            case .unicorn(let url):
+                let library = try loadLibrary(url)
+                return { try Unicorn(library: library, cancellation: cancellation) }
+            case .native:
+                let makeEngine = try nativeEngineMaker()
+                return { try makeEngine(cancellation) }
+            }
+        }
+    }
+
+    /// This host's hardware-virtualization backend, if it has one.
+    #if arch(arm64) && os(macOS)
+    static let nativeBackend: AnisetteConfiguration.Backend? = .hypervisor
+    #elseif arch(arm64) && os(Linux)
+    static let nativeBackend: AnisetteConfiguration.Backend? = .kvm
+    #else
+    static let nativeBackend: AnisetteConfiguration.Backend? = nil
+    #endif
+
+    /// Whether this host has a hardware-virtualization backend whose VM can be created.
+    static var isNativeAvailable: Bool {
+        #if arch(arm64) && (os(macOS) || os(Linux))
+        NativeRuntime.isAvailable
+        #else
+        false
+        #endif
+    }
+
+    /// Loads the shared native VM and returns a maker for its engines.
+    private static func nativeEngineMaker() throws -> (Cancellation) throws -> any GuestEngine {
+        #if arch(arm64) && (os(macOS) || os(Linux))
+        let runtime = try NativeRuntime.shared()
+        return { try ARM64Engine(runtime: runtime, cancellation: $0) }
+        #else
+        throw AnisetteError("This host has no hardware-virtualization backend")
+        #endif
+    }
+
     let profile: Profile
-    let library: URL
+    let engine: Engine
 
     private static let cache = Coalescer<CacheKey, Resources>()
 
@@ -75,35 +125,58 @@ struct Resources: Sendable {
         }
     }
 
-    /// Verifying the ~78 MB of assets is expensive, so do it once per configuration per process.
-    static func load(configuration: AnisetteConfiguration) async throws -> Resources {
-        let key = CacheKey(
-            appleDirectory: configuration.appleDirectory,
-            unicornLibrary: configuration.unicornLibrary,
-            cacheDirectory: configuration.cacheDirectory
-        )
-        return try await cache.load(key) {
-            try await Resources.loadUncached(configuration: configuration)
+    /// Whether `requested` runs on the native backend; throws if it names one this host cannot run.
+    static func usesNativeBackend(_ requested: AnisetteConfiguration.Backend) throws -> Bool {
+        switch requested {
+        case .unicorn:
+            return false
+        case .automatic:
+            return isNativeAvailable
+        case .hypervisor, .kvm:
+            guard requested == nativeBackend else {
+                throw requested == .kvm
+                    ? AnisetteError("KVM backend is only supported on ARM64 Linux")
+                    : AnisetteError("Hypervisor backend is only supported on Apple Silicon macOS")
+            }
+            _ = try nativeEngineMaker()
+            return true
         }
     }
 
-    /// Loaded resources depend only on these locations: every byte is verified
-    /// against pinned hashes, whichever HTTP client fetched it.
+    /// Verifying the ~78 MB of assets is expensive, so do it once per configuration per process.
+    static func load(configuration: AnisetteConfiguration) async throws -> Resources {
+        let native = try usesNativeBackend(configuration.backend)
+        let key = CacheKey(
+            appleDirectory: configuration.appleDirectory,
+            unicornLibrary: native ? nil : configuration.unicornLibrary,
+            cacheDirectory: configuration.cacheDirectory,
+            native: native
+        )
+        return try await cache.load(key) {
+            try await Resources.loadUncached(configuration: configuration, native: native)
+        }
+    }
+
+    /// Loaded resources depend only on these locations and execution backend: every byte is
+    /// verified against pinned hashes, whichever HTTP client fetched it.
     struct CacheKey: Hashable, Sendable {
         let appleDirectory: URL?
         let unicornLibrary: URL?
         let cacheDirectory: URL
+        let native: Bool
     }
 
-    private static func loadUncached(configuration: AnisetteConfiguration) async throws -> Resources {
+    private static func loadUncached(configuration: AnisetteConfiguration, native: Bool) async throws -> Resources {
         let build = try PinnedBuild.current()
         async let assetsResult = loadAssets(for: build, configuration: configuration)
-        async let unicornResult = loadUnicorn(configuration: configuration)
+        async let unicornResult: (URL?, String?, Bool) = native
+            ? (nil, nil, false)
+            : loadUnicorn(configuration: configuration)
         let (assets, activeAssetDirectory, installedAssets) = try await assetsResult
         let (library, activeUnicornPath, installedUnicorn) = try await unicornResult
         let profile = try Profile.load(assets: assets)
         if let activeAssetDirectory { touchLastUsed(in: activeAssetDirectory) }
-        if activeUnicornPath != nil { touchLastUsed(in: library.deletingLastPathComponent()) }
+        if let library, activeUnicornPath != nil { touchLastUsed(in: library.deletingLastPathComponent()) }
         if installedAssets || installedUnicorn {
             pruneCache(
                 in: configuration.cacheDirectory,
@@ -111,7 +184,7 @@ struct Resources: Sendable {
                 keepingUnicornPath: activeUnicornPath
             )
         }
-        return Resources(profile: profile, library: library)
+        return Resources(profile: profile, engine: library.map(Engine.unicorn) ?? .native)
     }
 
     private static func loadAssets(

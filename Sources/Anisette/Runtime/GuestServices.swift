@@ -1,12 +1,11 @@
 import Foundation
-import CAnisette
 
 /// The guest sees a small virtual Darwin environment. Files and pointers here
 /// belong to the emulator, and are never forwarded to host APIs.
 final class GuestServices {
     static let base: UInt64 = 0x7ff880000000
     static let fakeHandle = UInt64.max
-    let engine: Unicorn
+    let engine: any GuestEngine
     let profile: Profile
     let icxs: Data
     let pauseRunLoop: Bool
@@ -47,7 +46,7 @@ final class GuestServices {
     var aesService: UInt64 = 0
     var bufferVtable: UInt64 = 0
 
-    init(engine: Unicorn, profile: Profile, pauseRunLoop: Bool) throws {
+    init(engine: any GuestEngine, profile: Profile, pauseRunLoop: Bool) throws {
         self.engine = engine
         self.profile = profile
         self.icxs = profile.icxs
@@ -56,7 +55,7 @@ final class GuestServices {
         try engine.map(Self.base, 1 << 20)
         for (symbol, address) in symbols {
             entries[address] = Self.handlers[symbol] ?? symbol
-            try engine.write(address, UInt32(0xd65f03c0))
+            try engine.installServiceStub(at: address)
         }
         errnoAddress = try addData("guest.errno", Data(count: 8))
         try addData("___stack_chk_guard", Data([0xa5, 0x71, 0x3c, 0xd9, 0x86, 0x42, 0xef, 0x10]))
@@ -71,19 +70,17 @@ final class GuestServices {
             try addData(symbol, .littleEndian(value))
         }
         try addFunction("callback.complete", handler: "callbackComplete")
-        let context = Unmanaged.passUnretained(self).toOpaque()
-        let end = GuestServices.base + 0x7ffff
-        try engine.check(anisette_engine_hook(engine.pointer, GuestServices.base, end, { context, address, _ in
-            guard let context else { return }
-            let services = Unmanaged<GuestServices>.fromOpaque(context).takeUnretainedValue()
+        let end = GuestServices.base + 0x80000
+        try engine.installServiceDispatcher(range: GuestServices.base..<end) { [weak self] address in
+            guard let self else { return }
             do {
-                guard let handler = services.entries[address] else { throw AnisetteError("Unknown guest service") }
-                try services.dispatch(handler)
+                guard let handler = self.entries[address] else { throw AnisetteError("Unknown guest service") }
+                try self.dispatch(handler)
             } catch {
-                if services.fault == nil { services.fault = error }
-                services.engine.stop()
+                if self.fault == nil { self.fault = error }
+                self.engine.stop()
             }
-        }, context))
+        }
     }
 
     @discardableResult
@@ -106,15 +103,15 @@ final class GuestServices {
         try require(codeCursor + 16 <= Self.base + 0x80000, "Guest service code area exhausted")
         let address = codeCursor
         codeCursor += 16
-        try engine.write(address, UInt32(0xd65f03c0))
+        try engine.installServiceStub(at: address)
         symbols[name] = address
         entries[address] = handler
         return address
     }
 
     func argument(_ index: Int) throws -> UInt64 {
-        if index < 8 { return try engine.register(Unicorn.x0 + Int32(index)) }
-        return try engine.read(guestAddress(engine.register(Unicorn.sp), offset: UInt64((index - 8) * 8)), as: UInt64.self)
+        if index < 8 { return try engine.register(.x(index)) }
+        return try engine.read(guestAddress(engine.register(.sp), offset: UInt64((index - 8) * 8)), as: UInt64.self)
     }
 
     func argument32(_ index: Int) throws -> UInt32 {
@@ -125,7 +122,7 @@ final class GuestServices {
         Int32(bitPattern: try argument32(index))
     }
 
-    func result(_ value: UInt64) throws { try engine.register(Unicorn.x0, value) }
+    func result(_ value: UInt64) throws { try engine.register(.x0, value) }
 
     func string(_ address: UInt64, maximum: UInt64 = 4096) throws -> String {
         var data = Data()

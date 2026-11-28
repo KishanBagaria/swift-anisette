@@ -17,7 +17,11 @@ let package = Package(
         .target(
             name: "CAnisette",
             dependencies: [.product(name: "LZFSE", package: "lzfse-swift")],
-            linkerSettings: [.linkedLibrary("z"), .linkedLibrary("dl", .when(platforms: [.linux]))]
+            linkerSettings: [
+                .linkedLibrary("z"),
+                .linkedLibrary("dl", .when(platforms: [.linux])),
+                .linkedLibrary("rt", .when(platforms: [.linux])),
+            ]
         ),
         .target(
             name: "Anisette",
@@ -29,7 +33,8 @@ let package = Package(
                 .product(name: "Crypto", package: "swift-crypto"),
                 .product(name: "CryptoExtras", package: "swift-crypto"),
             ],
-            resources: [.process("Resources")]
+            resources: [.process("Resources")],
+            linkerSettings: [.linkedFramework("Hypervisor", .when(platforms: [.macOS]))]
         ),
         .executableTarget(
             name: "anisette-example",
